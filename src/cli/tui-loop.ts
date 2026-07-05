@@ -26,6 +26,7 @@ import type { ConversationCoordinator } from "../coordinator.js";
 import type { McpManager } from "../mcp/index.js";
 import type { CommandRouter } from "./command-router.js";
 import type { ExecuteTurnOptions } from "../coordinator.js";
+import type { ModelInfo } from "../llm/models-config.js";
 
 // ============================================================================
 // ANSI Style Helpers (no external dependency needed)
@@ -117,15 +118,25 @@ export class TuiLoop {
   private loader: Loader;
   /** Abort controller for cancelling in-flight agent turn. */
   private abortController: AbortController | null = null;
+  /** Available models for switching via Ctrl+P. */
+  private models: ModelInfo[];
+  /** Currently active model ID. */
+  private currentModelId: string;
+  /** Info bar at the bottom: model name, token usage, cost. */
+  private infoBar: Text;
 
   constructor(
     coordinator: ConversationCoordinator,
     commandRouter: CommandRouter,
     mcpManager: McpManager,
+    models: ModelInfo[],
+    defaultModelId: string,
   ) {
     this.coordinator = coordinator;
     this.commandRouter = commandRouter;
     this.mcpManager = mcpManager;
+    this.models = models;
+    this.currentModelId = defaultModelId;
 
     // Create terminal and TUI
     const terminal = new ProcessTerminal();
@@ -172,6 +183,10 @@ export class TuiLoop {
 
     this.tui.addChild(this.editor);
 
+    // Info bar at the very bottom: model + session token/cost stats
+    this.infoBar = new Text(this._buildInfoBarText(), 0, 0);
+    this.tui.addChild(this.infoBar);
+
     // Focus the editor
     this.tui.setFocus(this.editor);
 
@@ -199,6 +214,11 @@ export class TuiLoop {
       // Ctrl+N: new session
       if (matchesKey(data, Key.ctrl("n"))) {
         this.handleNewSession();
+        return { consume: true };
+      }
+      // Ctrl+P: switch model
+      if (matchesKey(data, Key.ctrl("p"))) {
+        this.showModelSwitchOverlay();
         return { consume: true };
       }
       return undefined;
@@ -455,6 +475,8 @@ export class TuiLoop {
             }
             // Add spacer after assistant response for visual separation
             this.addMessage(new Spacer(1));
+            // Update info bar with latest session stats
+            this._updateInfoBar();
             break;
           }
 
@@ -527,6 +549,57 @@ export class TuiLoop {
   }
 
   // ==========================================================================
+  // Info bar (bottom of TUI: model + token/cost stats)
+  // ==========================================================================
+
+  /** Build the info bar text from coordinator session stats. */
+  private _buildInfoBarText(): string {
+    const modelPart = `Model: ${this.currentModelId}`;
+
+    const usage = this.coordinator.sessionUsage;
+    let tokenPart: string;
+    if (usage) {
+      const up = this._formatTokens(usage.promptTokens);
+      const down = this._formatTokens(usage.completionTokens);
+      const total = this._formatTokens(usage.totalTokens);
+      const cache = this._formatTokens(usage.cacheHitTokens);
+      tokenPart = `Tokens: ${up}↑ ${down}↓ ${total}∑ cache:${cache}`;
+    } else {
+      tokenPart = "Tokens: --";
+    }
+
+    const billing = this.coordinator.sessionBilling;
+    let costPart: string;
+    if (billing) {
+      const inCost = this._formatCost(billing.inputCost);
+      const outCost = this._formatCost(billing.outputCost);
+      const totalCost = this._formatCost(billing.totalCost);
+      costPart = `Cost: ${inCost}↑ ${outCost}↓ = ${totalCost}`;
+    } else {
+      costPart = "Cost: --";
+    }
+
+    return `${modelPart} | ${tokenPart} | ${costPart}`;
+  }
+
+  /** Update the info bar text and trigger a render. */
+  private _updateInfoBar(): void {
+    this.infoBar.setText(this._buildInfoBarText());
+    this.tui.requestRender();
+  }
+
+  /** Format a token count for display (e.g. 12500 → "12.5K"). */
+  private _formatTokens(n: number): string {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return n.toString();
+  }
+
+  /** Format a cost value for display (e.g. 0.0012 → "¥0.0012"). */
+  private _formatCost(n: number): string {
+    return `¥${n.toFixed(4)}`;
+  }
+
+  // ==========================================================================
   // New session
   // ==========================================================================
 
@@ -535,6 +608,7 @@ export class TuiLoop {
     this.coordinator.newSession();
     this.clearMessages();
     this.updateStatusBar();
+    this._updateInfoBar();
     this.tui.requestRender();
   }
 
@@ -603,6 +677,7 @@ export class TuiLoop {
         }
 
         this.updateStatusBar();
+        this._updateInfoBar();
         this.tui.requestRender();
       } catch (err) {
         this.addMessage(
@@ -619,6 +694,47 @@ export class TuiLoop {
       anchor: "center",
       width: "90%",
       maxHeight: "60%",
+    });
+  }
+
+  // ========================================================================
+  // Model switching (Ctrl+P)
+  // ========================================================================
+
+  /** Show a SelectList overlay for switching the active model. */
+  private showModelSwitchOverlay(): void {
+    if (this.models.length === 0) return;
+
+    const items = this.models.map((m) => ({
+      value: m.id,
+      label: `${m.id === this.currentModelId ? "* " : "  "}${m.name}`,
+      description: `${m.contextWindow.toLocaleString()} ctx | ${m.maxTokens.toLocaleString()} max`,
+    }));
+
+    const list = new SelectList(items, 10, selectListTheme);
+
+    list.onSelect = (item) => {
+      if (item.value === this.currentModelId) return;
+
+      this.currentModelId = item.value;
+      this.coordinator.setModel(item.value);
+
+      this.addMessage(
+        new Text(
+          `${ansi.cyan("Model")} ${ansi.dim("→")} ${ansi.bold(item.value)}`,
+          0,
+          0,
+          ansi.bgGray,
+        ),
+      );
+      this._updateInfoBar();
+      this.tui.requestRender();
+    };
+
+    this.tui.showOverlay(list, {
+      anchor: "center",
+      width: "60%",
+      maxHeight: "40%",
     });
   }
 }

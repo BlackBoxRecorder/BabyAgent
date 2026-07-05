@@ -8,6 +8,11 @@ import { Agent } from "../agent.js";
 import { SessionManager } from "../session.js";
 import { ConversationCoordinator } from "../coordinator.js";
 import { DeepSeekClient } from "../llm/index.js";
+import {
+  loadModelConfig,
+  getDeepSeekProvider,
+  type ModelInfo,
+} from "../llm/models-config.js";
 import { createBashToolAsTool } from "../tools/bash/index.js";
 import { createAllFsTools } from "../tools/fs/index.js";
 import { McpManager, type ServerStatus } from "../mcp/index.js";
@@ -26,6 +31,10 @@ export interface AppComponents {
   display: DisplayRenderer;
   mcpManager: McpManager;
   skillManager: SkillManager;
+  /** List of available models from the config, for UI switching. */
+  models: ModelInfo[];
+  /** The default model ID to display as active on startup. */
+  defaultModelId: string;
 }
 
 // ============================================================================
@@ -35,15 +44,24 @@ export interface AppComponents {
 /**
  * Create and wire all CLI dependencies.
  *
- * Reads the API key from `DEEPSEEK_API_KEY` env var, loads MCP tools,
+ * Reads provider config from ~/.babyAgent/models.json, loads MCP tools,
  * discovers skills, creates the agent and coordinator, and returns
  * all components ready for the app loop.
  */
 export async function createApp(): Promise<AppComponents> {
-  const apiKey = process.env.DEEPSEEK_API_KEY!;
+  // ------------------------------------------------------------------
+  // Model config — single source of truth for LLM connectivity
+  // ------------------------------------------------------------------
+  const modelConfig = await loadModelConfig();
+  const deepseekProvider = getDeepSeekProvider(modelConfig);
   const cwd = process.cwd();
 
   const display = new DisplayRenderer();
+
+  display.println(
+    `Provider: deepseek | ${deepseekProvider.models.length} model(s) | ` +
+      `default: ${deepseekProvider.defaultModel}`,
+  );
 
   // ------------------------------------------------------------------
   // Tools
@@ -119,9 +137,15 @@ export async function createApp(): Promise<AppComponents> {
   // Agent + Coordinator
   // ------------------------------------------------------------------
   const agent = new Agent({
-    llm: new DeepSeekClient({ apiKey }),
+    llm: new DeepSeekClient({
+      apiKey: deepseekProvider.apiKey,
+      baseUrl: deepseekProvider.baseUrl,
+      defaults: { model: deepseekProvider.defaultModel },
+    }),
     tools: allTools,
     systemPrompt,
+    models: deepseekProvider.models,
+    defaultModel: deepseekProvider.defaultModel,
   });
 
   const coordinator = new ConversationCoordinator({
@@ -140,5 +164,13 @@ export async function createApp(): Promise<AppComponents> {
     display,
   );
 
-  return { coordinator, commandRouter, display, mcpManager, skillManager };
+  return {
+    coordinator,
+    commandRouter,
+    display,
+    mcpManager,
+    skillManager,
+    models: deepseekProvider.models,
+    defaultModelId: deepseekProvider.defaultModel!,
+  };
 }

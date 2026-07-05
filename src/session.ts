@@ -2,7 +2,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
-import type { Message, TokenUsage } from "./llm/index.js";
+import type {
+  Message,
+  TokenUsage,
+  TurnUsage,
+  BillingInfo,
+} from "./llm/index.js";
 
 // ============================================================================
 // Types
@@ -24,6 +29,10 @@ export interface TurnRecord {
   userInput: string;
   messages: Message[];
   usage?: TokenUsage;
+  /** Aggregated turn-level token usage (sum of all LLM calls) */
+  turnUsage?: TurnUsage;
+  /** Computed billing for this turn */
+  billing?: BillingInfo;
 }
 
 // ============================================================================
@@ -152,6 +161,33 @@ export class SessionManager {
   /** Get metadata for a single session, or null if not found. */
   async getSessionMeta(sessionId: string): Promise<SessionMeta | null> {
     return this._readMeta(sessionId);
+  }
+
+  /** Load full TurnRecords from a session (includes usage/billing per turn). */
+  async loadTurnRecords(sessionId: string): Promise<TurnRecord[]> {
+    const filePath = this._getTurnsPath(sessionId);
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, "utf-8");
+    } catch {
+      return [];
+    }
+
+    const records: TurnRecord[] = [];
+    const lines = content.trim().split("\n");
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === "turn") {
+          records.push(parsed as TurnRecord);
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    return records;
   }
 
   // ==========================================================================

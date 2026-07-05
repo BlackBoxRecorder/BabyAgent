@@ -4,7 +4,7 @@
  * Sits between CLI (display) and Agent + SessionManager (logic + persistence).
  * Owns conversation state so display adapters (CLI, future TUI) don't need to.
  */
-import type { Message } from "./llm/index.js";
+import type { Message, TurnUsage, BillingInfo } from "./llm/index.js";
 import { Agent, type AgentStreamEvent, type AgentResult } from "./agent.js";
 import {
   SessionManager,
@@ -44,6 +44,10 @@ export class ConversationCoordinator {
   private agent: Agent;
   private sessionManager: SessionManager;
   private _sessionId: string | null = null;
+  /** Session-level accumulated token usage (sum of all completed Turns). */
+  private _sessionUsage: TurnUsage = _zeroUsage();
+  /** Session-level accumulated billing (sum of all completed Turns). */
+  private _sessionBilling: BillingInfo = _zeroBilling();
 
   constructor(config: CoordinatorConfig) {
     this.agent = config.agent;
@@ -58,6 +62,26 @@ export class ConversationCoordinator {
     return this._sessionId;
   }
 
+  /** Get the currently active model ID. */
+  get currentModel(): string {
+    return this.agent.currentModel;
+  }
+
+  /** Get the last known context size (prompt tokens from last LLM call). */
+  get contextSize(): number {
+    return this.agent.lastContextSize;
+  }
+
+  /** Session-level accumulated token usage, or null if no turns completed. */
+  get sessionUsage(): TurnUsage | null {
+    return this._sessionUsage.totalTokens > 0 ? this._sessionUsage : null;
+  }
+
+  /** Session-level accumulated billing, or null if no turns completed. */
+  get sessionBilling(): BillingInfo | null {
+    return this._sessionBilling.totalCost > 0 ? this._sessionBilling : null;
+  }
+
   // ==========================================================================
   // Session lifecycle
   // ==========================================================================
@@ -65,6 +89,8 @@ export class ConversationCoordinator {
   /** Discard current session and start fresh. */
   newSession(): void {
     this._sessionId = null;
+    this._sessionUsage = _zeroUsage();
+    this._sessionBilling = _zeroBilling();
     this.agent.setConversationMessages([]);
   }
 
@@ -81,6 +107,11 @@ export class ConversationCoordinator {
       return all.slice(1);
     }
     return [...all];
+  }
+
+  /** Switch the LLM model at runtime (pass-through to agent). */
+  setModel(modelId: string): void {
+    this.agent.setModel(modelId);
   }
 
   /** Resume a persisted session, restoring its full message history.
@@ -114,6 +145,15 @@ export class ConversationCoordinator {
       { role: "system", content: this.agent.systemPromptText },
       ...loaded,
     ]);
+
+    // Accumulate historical turn usage & billing for the info bar
+    this._sessionUsage = _zeroUsage();
+    this._sessionBilling = _zeroBilling();
+    const records = await this.sessionManager.loadTurnRecords(resolvedId);
+    for (const rec of records) {
+      this._accumulateTurn(rec.turnUsage, rec.billing);
+    }
+
     return meta;
   }
 
@@ -213,7 +253,12 @@ export class ConversationCoordinator {
     // Agent updates its internal state automatically in runWithMessages.
     // No need to manually sync — conversationMessages is already up to date.
 
-    // Persist the turn
+    // Accumulate session-level usage & billing from this turn
+    if (result) {
+      this._accumulateTurn(result.usage, result.billing);
+    }
+
+    // Persist the turn with usage & billing
     if (this._sessionId && result) {
       const turnMessages = result.allMessages.slice(messagesBefore);
       if (turnMessages.length > 0) {
@@ -222,6 +267,8 @@ export class ConversationCoordinator {
           timestamp: new Date().toISOString(),
           userInput,
           messages: turnMessages,
+          turnUsage: result.usage,
+          billing: result.billing,
         };
         try {
           await this.sessionManager.appendTurn(this._sessionId, turnRecord);
@@ -274,4 +321,55 @@ export class ConversationCoordinator {
       };
     }
   }
+
+  // ==========================================================================
+  // Private: session stats accumulation
+  // ==========================================================================
+
+  /** Accumulate a Turn's usage & billing into the session totals. */
+  private _accumulateTurn(
+    usage: TurnUsage | undefined,
+    billing: BillingInfo | undefined,
+  ): void {
+    if (usage) {
+      this._sessionUsage.promptTokens += usage.promptTokens;
+      this._sessionUsage.completionTokens += usage.completionTokens;
+      this._sessionUsage.totalTokens += usage.totalTokens;
+      this._sessionUsage.cacheHitTokens += usage.cacheHitTokens;
+      this._sessionUsage.cacheMissTokens += usage.cacheMissTokens;
+      this._sessionUsage.reasoningTokens += usage.reasoningTokens;
+    }
+    if (billing) {
+      this._sessionBilling.inputCost += billing.inputCost;
+      this._sessionBilling.outputCost += billing.outputCost;
+      this._sessionBilling.cacheReadCost += billing.cacheReadCost;
+      this._sessionBilling.cacheWriteCost += billing.cacheWriteCost;
+      this._sessionBilling.totalCost += billing.totalCost;
+    }
+  }
+}
+
+// ============================================================================
+// Module-level helpers
+// ============================================================================
+
+function _zeroUsage(): TurnUsage {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    reasoningTokens: 0,
+  };
+}
+
+function _zeroBilling(): BillingInfo {
+  return {
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    totalCost: 0,
+  };
 }

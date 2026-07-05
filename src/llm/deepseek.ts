@@ -17,9 +17,14 @@ export class DeepSeekClient implements LLMClient {
     defaults: Required<DeepSeekRequestConfig>;
   };
 
+  /** The model id currently in use — can be changed at runtime via setDefaultModel(). */
+  private currentModel: string;
+
   private static DEFAULT_BASE_URL = "https://api.deepseek.com";
-  private static DEFAULT_REQUEST_CONFIG: Required<DeepSeekRequestConfig> = {
-    model: "deepseek-v4-flash",
+  private static DEFAULT_REQUEST_CONFIG: Omit<
+    Required<DeepSeekRequestConfig>,
+    "model"
+  > = {
     thinking: { type: "enabled" },
     reasoning_effort: "high",
     max_tokens: 1000 * 64,
@@ -30,14 +35,25 @@ export class DeepSeekClient implements LLMClient {
   };
 
   constructor(config: DeepSeekConfig) {
+    this.currentModel = config.defaults?.model ?? "deepseek-v4-flash";
     this.config = {
       apiKey: config.apiKey,
       baseUrl: config.baseUrl ?? DeepSeekClient.DEFAULT_BASE_URL,
       defaults: {
+        model: this.currentModel,
         ...DeepSeekClient.DEFAULT_REQUEST_CONFIG,
         ...config.defaults,
       },
     };
+  }
+
+  /**
+   * Switch the default model at runtime.
+   * Subsequent chatStream calls will use this model unless overridden in options.
+   */
+  setDefaultModel(modelId: string): void {
+    this.currentModel = modelId;
+    this.config.defaults.model = modelId;
   }
 
   /**

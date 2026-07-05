@@ -12,6 +12,8 @@ import type {
   LLMResponse,
   LLMStreamChunk,
   Message,
+  TurnUsage,
+  BillingInfo,
 } from "./llm/index.js";
 import {
   DefaultToolRegistry,
@@ -19,6 +21,7 @@ import {
   type ToolRegistry,
   type ToolResult,
 } from "./tools/interface/index.js";
+import type { ModelInfo } from "./llm/models-config.js";
 
 // ============================================================================
 // Types
@@ -34,6 +37,10 @@ export interface AgentConfig {
   systemPrompt?: string;
   /** Maximum ReAct iterations (prevents infinite loops), default: 10 */
   maxIterations?: number;
+  /** Available models with cost rates (for billing computation) */
+  models?: ModelInfo[];
+  /** Default model ID at startup */
+  defaultModel?: string;
 }
 
 /** Result of an agent run */
@@ -45,6 +52,10 @@ export interface AgentResult {
   /** All messages produced during this run (input + output).
    *  The caller must NOT mutate the input array — Agent copies it internally. */
   allMessages: Message[];
+  /** Aggregated turn-level token usage (only on successful turns) */
+  usage?: TurnUsage;
+  /** Computed billing for this turn (only on successful turns) */
+  billing?: BillingInfo;
 }
 
 /** Events emitted during a streaming agent run */
@@ -80,11 +91,16 @@ export class Agent {
   private systemPrompt: string;
   private maxIterations: number;
   private _conversationMessages: Message[] = [];
+  private _currentModel: string;
+  private _lastContextSize: number = 0;
+  private models: ModelInfo[];
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
     this.systemPrompt = config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.maxIterations = config.maxIterations ?? 100;
+    this.models = config.models ?? [];
+    this._currentModel = config.defaultModel ?? "unknown";
 
     this.registry = new DefaultToolRegistry();
     for (const tool of config.tools) {
@@ -97,6 +113,16 @@ export class Agent {
     return this.systemPrompt;
   }
 
+  /** Currently active model ID. */
+  get currentModel(): string {
+    return this._currentModel;
+  }
+
+  /** Last known context size (prompt_tokens from last successful LLM call). */
+  get lastContextSize(): number {
+    return this._lastContextSize;
+  }
+
   /** Current conversation messages (owned by the Agent). */
   get conversationMessages(): readonly Message[] {
     return this._conversationMessages;
@@ -105,6 +131,12 @@ export class Agent {
   /** Replace the current conversation message list (e.g. on session switch). */
   setConversationMessages(messages: Message[]): void {
     this._conversationMessages = [...messages];
+  }
+
+  /** Switch the LLM model at runtime (pass-through to client). */
+  setModel(modelId: string): void {
+    this._currentModel = modelId;
+    this.llm.setDefaultModel(modelId);
   }
 
   /**
@@ -120,6 +152,14 @@ export class Agent {
 
     const toolCallsLog: ToolCallLog[] = [];
     let iterations = 0;
+
+    // Accumulate token usage across all LLM calls in this turn
+    let accPromptTokens = 0;
+    let accCompletionTokens = 0;
+    let accTotalTokens = 0;
+    let accCacheHitTokens = 0;
+    let accCacheMissTokens = 0;
+    let accReasoningTokens = 0;
 
     while (iterations < this.maxIterations) {
       iterations++;
@@ -150,17 +190,43 @@ export class Agent {
         return result;
       }
 
-      // 2. If no tool calls, return final result
+      // Accumulate usage from this LLM call
+      if (accumulatedResponse.usage) {
+        const u = accumulatedResponse.usage;
+        accPromptTokens += u.prompt_tokens;
+        accCompletionTokens += u.completion_tokens;
+        accTotalTokens += u.total_tokens;
+        accCacheHitTokens += u.prompt_cache_hit_tokens ?? 0;
+        accCacheMissTokens += u.prompt_cache_miss_tokens ?? 0;
+        accReasoningTokens +=
+          u.completion_tokens_details?.reasoning_tokens ?? 0;
+        // Update context size from last successful LLM call's prompt_tokens
+        this._lastContextSize = u.prompt_tokens;
+      }
+
+      // 2. If no tool calls, return final result with usage & billing
       if (
         !accumulatedResponse.tool_calls ||
         accumulatedResponse.tool_calls.length === 0
       ) {
+        const usage: TurnUsage = {
+          promptTokens: accPromptTokens,
+          completionTokens: accCompletionTokens,
+          totalTokens: accTotalTokens,
+          cacheHitTokens: accCacheHitTokens,
+          cacheMissTokens: accCacheMissTokens,
+          reasoningTokens: accReasoningTokens,
+        };
+        const billing = this._computeBilling(usage);
+
         const result: AgentResult = {
           success: true,
           content: accumulatedResponse.content ?? "",
           toolCalls: toolCallsLog,
           iterations,
           allMessages: messages,
+          usage,
+          billing,
         };
         this._conversationMessages = messages;
         yield { type: "done", result };
@@ -280,5 +346,24 @@ export class Agent {
       { role: "user", content: userInput },
     ];
     return yield* this.runWithMessages(messages);
+  }
+
+  // ==========================================================================
+  // Private helpers
+  // ==========================================================================
+
+  /** Compute billing from usage and current model's cost rates. */
+  private _computeBilling(usage: TurnUsage): BillingInfo | undefined {
+    const modelInfo = this.models.find((m) => m.id === this._currentModel);
+    if (!modelInfo) return undefined;
+
+    const cost = modelInfo.cost;
+    const inputCost = usage.promptTokens * cost.input;
+    const outputCost = usage.completionTokens * cost.output;
+    const cacheReadCost = usage.cacheHitTokens * cost.cacheRead;
+    const cacheWriteCost = usage.cacheMissTokens * cost.cacheWrite;
+    const totalCost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+
+    return { inputCost, outputCost, cacheReadCost, cacheWriteCost, totalCost };
   }
 }

@@ -2,7 +2,7 @@
  * Shared transport types for MCP client connections.
  */
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { JsonSchema } from "../tools/interface/index.js";
+import type { JsonSchema } from "../../tools/interface/index.js";
 
 /**
  * Unified transport interface used by both stdio and HTTP/SSE transports.

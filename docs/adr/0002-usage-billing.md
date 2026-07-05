@@ -1,0 +1,3 @@
+# Turn-level token usage aggregation and billing
+
+We aggregate token usage across all LLM calls within a Turn (not per-iteration) because the user cares about total cost per turn, not per ReAct step. Billing is computed in the Agent (not Coordinator) because the Agent owns the LLM interaction loop and has access to model cost rates via `ModelInfo[]`. Usage and billing are only reported on successful turns — aborted or error turns are not billed since the user shouldn't pay for incomplete work. Context size (prompt tokens) is taken from the last LLM call's `prompt_tokens`, which is the model's own token count for the full conversation window.

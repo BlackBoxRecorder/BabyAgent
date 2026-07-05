@@ -43,3 +43,35 @@ _Avoid_: Input box, text field, prompt line
 **TUI**:
 The Terminal User Interface layer built with `@earendil-works/pi-tui`. Replaces the readline-based `AppLoop` + `DisplayRenderer`. Owns layout, rendering, and keyboard input routing.
 _Avoid_: GUI, curses, screen
+
+**Model Config**:
+A JSON file at `~/.babyAgent/models.json` defining providers, their API endpoints, auth, and available models. Single source of truth for LLM connectivity.
+_Avoid_: Config file, settings, provider config
+
+**Provider**:
+An LLM service (e.g. DeepSeek) with a base URL, API key, and a list of models. `providers` mapping in the model config.
+_Avoid_: Service, backend
+
+**Model**:
+A specific LLM version exposed by a provider. Identified by `id` (used both for display and API calls). Has a context window, max tokens, and cost structure.
+_Avoid_: Version, variant, engine
+
+**Turn Usage**:
+Aggregated token consumption across all LLM calls within a single Turn. Contains prompt/completion/cache/reasoning token totals. Only available on successful (non-aborted, non-error) turns.
+_Avoid_: Iteration usage, per-call usage
+
+**Billing**:
+The computed cost of a Turn, derived from the Turn Usage and the active Model's cost rates (input/output/cacheRead/cacheWrite). Computed by the Agent after a successful turn completes.
+_Avoid_: Price, fee, charge
+
+**Context Size**:
+The total token count of the conversation context visible to the LLM. Reported as the `prompt_tokens` from the last successful API call. Available via the Coordinator.
+_Avoid_: Window size, token count, context window
+
+**Info Bar**:
+A single-line status display at the very bottom of the TUI, below the Editor. Shows the active Model name, Session-level aggregated token usage (input↑/output↓/total∑/cache), and cumulative cost (input↑/output↓/total in ¥). Updated after each completed Turn. Managed by `TuiLoop`.
+_Avoid_: Footer, status line, bottom bar
+
+**Model Name**:
+The identifier string of the currently active LLM model (e.g. `deepseek-chat`). Exposed via `Coordinator.currentModel` for display in the TUI status bar.
+_Avoid_: Model ID, model version

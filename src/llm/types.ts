@@ -78,6 +78,33 @@ export interface LLMResponse {
   usage?: TokenUsage;
 }
 
+/**
+ * Turn-level aggregated token usage across all LLM calls in a Turn.
+ * Only present on successful (non-aborted, non-error) turns. */
+export interface TurnUsage {
+  /** Sum of prompt_tokens across all LLM calls */
+  promptTokens: number;
+  /** Sum of completion_tokens across all LLM calls */
+  completionTokens: number;
+  /** Sum of total_tokens across all LLM calls */
+  totalTokens: number;
+  /** Sum of prompt_cache_hit_tokens (DeepSeek) */
+  cacheHitTokens: number;
+  /** Sum of prompt_cache_miss_tokens (DeepSeek) */
+  cacheMissTokens: number;
+  /** Sum of reasoning_tokens across all LLM calls (DeepSeek) */
+  reasoningTokens: number;
+}
+
+/** Computed billing for a Turn based on TurnUsage and Model cost rates. */
+export interface BillingInfo {
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  totalCost: number;
+}
+
 /** Token usage statistics from the API. */
 export interface TokenUsage {
   prompt_tokens: number;
@@ -153,4 +180,10 @@ export interface LLMClient {
     tools?: LLMFunctionDef[],
     options?: Record<string, unknown>,
   ): AsyncGenerator<LLMStreamChunk>;
+
+  /**
+   * Switch the default model at runtime.
+   * Only meaningful for providers that expose multiple models.
+   */
+  setDefaultModel(modelId: string): void;
 }
