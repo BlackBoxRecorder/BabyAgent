@@ -66,14 +66,33 @@ export class ConversationCoordinator {
     return this.sessionManager.listSessions();
   }
 
-  /** Resume a persisted session, restoring its full message history. */
+  /** Resume a persisted session, restoring its full message history.
+   *  Supports both full session IDs and short 8-char prefixes (from /sessions). */
   async resumeSession(sessionId: string): Promise<SessionMeta> {
-    const meta = await this.sessionManager.getSessionMeta(sessionId);
+    let resolvedId = sessionId;
+
+    // 1. Try exact match first.
+    let meta = await this.sessionManager.getSessionMeta(sessionId);
+
+    // 2. If not found, try prefix matching (supports short IDs from /sessions).
     if (!meta) {
-      throw new Error(`Session "${sessionId.slice(0, 8)}" not found.`);
+      const allSessions = await this.sessionManager.listSessions();
+      const matches = allSessions.filter((s) => s.id.startsWith(sessionId));
+      if (matches.length === 0) {
+        throw new Error(`Session "${sessionId.slice(0, 8)}" not found.`);
+      }
+      if (matches.length > 1) {
+        const ids = matches.map((s) => s.id.slice(0, 20)).join(", ");
+        throw new Error(
+          `Ambiguous prefix "${sessionId}": matches ${matches.length} sessions (${ids}...). Use a longer prefix or full ID.`,
+        );
+      }
+      resolvedId = matches[0].id;
+      meta = matches[0];
     }
-    const loaded = await this.sessionManager.loadMessages(sessionId);
-    this._sessionId = sessionId;
+
+    const loaded = await this.sessionManager.loadMessages(resolvedId);
+    this._sessionId = resolvedId;
     this.agent.setConversationMessages([
       { role: "system", content: this.agent.systemPromptText },
       ...loaded,
