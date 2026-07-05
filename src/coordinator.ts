@@ -5,7 +5,7 @@
  * Owns conversation state so display adapters (CLI, future TUI) don't need to.
  */
 import type { Message } from "./llm/index.js";
-import { Agent, type AgentStreamEvent, type AgentResult } from "./index.js";
+import { Agent, type AgentStreamEvent, type AgentResult } from "./agent.js";
 import {
   SessionManager,
   type SessionMeta,

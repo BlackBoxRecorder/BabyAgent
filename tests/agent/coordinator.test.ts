@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent } from "../../src/index.js";
+import { Agent } from "../../src/agent.js";
 import { SessionManager } from "../../src/session.js";
 import { ConversationCoordinator } from "../../src/coordinator.js";
 import type {
@@ -68,13 +68,7 @@ function createMockLLMWithToolCall(
     }
   }
 
-  return {
-    chat: async () => ({
-      content: "mock response",
-      finish_reason: "stop",
-    }),
-    chatStream,
-  };
+  return { chatStream };
 }
 
 /**
@@ -85,12 +79,7 @@ function createThrowingMockLLM(errorMsg: string): LLMClient {
     throw new Error(errorMsg);
   }
 
-  return {
-    chat: async () => {
-      throw new Error(errorMsg);
-    },
-    chatStream,
-  };
+  return { chatStream };
 }
 
 // ============================================================================

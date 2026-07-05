@@ -3,8 +3,8 @@
 /**
  * Shared utilities for LLM verification scripts.
  */
-import { DeepSeekClient } from "../src/index.js";
-import type { DeepSeekConfig } from "../src/index.js";
+import { DeepSeekClient } from "../src/llm/index.js";
+import type { DeepSeekConfig } from "../src/llm/types.js";
 
 // ── Client ──────────────────────────────────────────────
 

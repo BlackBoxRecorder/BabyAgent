@@ -282,11 +282,3 @@ export class Agent {
     return yield* this.runWithMessages(messages);
   }
 }
-
-// Re-export coordinator for convenience
-export { ConversationCoordinator } from "./coordinator.js";
-export type { TurnEvent, CoordinatorConfig } from "./coordinator.js";
-
-// Re-export LLM client for convenience
-export { DeepSeekClient } from "./llm/index.js";
-export type { DeepSeekConfig } from "./llm/types.js";

@@ -4,7 +4,7 @@
  * Isolates the construction logic so the entry point (cli.ts) stays thin
  * and the component wiring is explicit and testable.
  */
-import { Agent } from "../index.js";
+import { Agent } from "../agent.js";
 import { SessionManager } from "../session.js";
 import { ConversationCoordinator } from "../coordinator.js";
 import { DeepSeekClient } from "../llm/index.js";
