@@ -142,7 +142,7 @@ describe("ConversationCoordinator", () => {
   beforeEach(async () => {
     tmpDir = path.join(
       os.tmpdir(),
-      `deepcode-coord-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      `babyAgent-coord-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     sessionManager = new SessionManager(tmpDir);
   });

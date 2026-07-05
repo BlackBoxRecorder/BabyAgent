@@ -35,7 +35,7 @@ export class McpManager {
   private _serverStatuses: ServerStatus[] = [];
 
   /**
-   * @param configPath Path to mcp.json. Defaults to ~/.deepcode/mcp.json.
+   * @param configPath Path to mcp.json. Defaults to ~/.babyAgent/mcp.json.
    */
   constructor(configPath?: string) {
     this.configPath = configPath ?? ""; // default resolved in loadAllTools

@@ -21,12 +21,19 @@ export type TurnEvent =
   | AgentStreamEvent
   | { type: "session_created"; sessionId: string; title: string }
   | { type: "save_error"; error: string }
-  | { type: "agent_error"; error: string };
+  | { type: "agent_error"; error: string }
+  | { type: "aborted" };
 
 /** Configuration for ConversationCoordinator. */
 export interface CoordinatorConfig {
   agent: Agent;
   sessionManager: SessionManager;
+}
+
+/** Options for executeTurn. */
+export interface ExecuteTurnOptions {
+  /** Signal to abort the turn mid-execution. */
+  signal?: AbortSignal;
 }
 
 // ============================================================================
@@ -64,6 +71,16 @@ export class ConversationCoordinator {
   /** List all persisted sessions, most recent first. */
   async listSessions(): Promise<SessionMeta[]> {
     return this.sessionManager.listSessions();
+  }
+
+  /** Get current session messages (excluding system prompt) for display. */
+  getSessionMessages(): Message[] {
+    const all = this.agent.conversationMessages as Message[];
+    // Skip the first message if it's the system prompt
+    if (all.length > 0 && all[0].role === "system") {
+      return all.slice(1);
+    }
+    return [...all];
   }
 
   /** Resume a persisted session, restoring its full message history.
@@ -108,7 +125,10 @@ export class ConversationCoordinator {
    * Execute one user-input turn through the Agent, saving the result.
    * Yields streaming events for real-time display.
    */
-  async *executeTurn(userInput: string): AsyncGenerator<TurnEvent, void> {
+  async *executeTurn(
+    userInput: string,
+    options?: ExecuteTurnOptions,
+  ): AsyncGenerator<TurnEvent, void> {
     // Auto-create session on first message
     if (this._sessionId === null) {
       const meta = await this.sessionManager.createSession(userInput);
@@ -134,6 +154,18 @@ export class ConversationCoordinator {
     let result: AgentResult | undefined;
     try {
       for await (const event of this.agent.runWithMessages(turnInput)) {
+        // Check abort signal every event to allow early termination
+        if (options?.signal?.aborted) {
+          yield { type: "aborted" };
+          // Persist partial turn before returning
+          yield* this.persistPartialTurn(
+            userInput,
+            messagesBefore,
+            turnInput,
+            "Turn aborted by user.",
+          );
+          return;
+        }
         if (event.type === "done") {
           result = event.result;
         }
@@ -200,6 +232,46 @@ export class ConversationCoordinator {
           };
         }
       }
+    }
+  }
+
+  // ==========================================================================
+  // Private: partial turn persistence (used on abort)
+  // ==========================================================================
+
+  /** Persist a partial turn when execution is aborted mid-stream. */
+  private async *persistPartialTurn(
+    userInput: string,
+    messagesBefore: number,
+    turnInput: Message[],
+    note: string,
+  ): AsyncGenerator<{ type: "save_error"; error: string }, void> {
+    if (!this._sessionId) return;
+
+    // Restore conversation state to before the failed turn
+    this.agent.setConversationMessages(
+      this.agent.conversationMessages.slice(0, messagesBefore),
+    );
+
+    const partialTurn: TurnRecord = {
+      type: "turn",
+      timestamp: new Date().toISOString(),
+      userInput,
+      messages: [
+        ...turnInput.slice(messagesBefore),
+        {
+          role: "assistant",
+          content: `[${note}]`,
+        } as Message,
+      ],
+    };
+    try {
+      await this.sessionManager.appendTurn(this._sessionId, partialTurn);
+    } catch (err) {
+      yield {
+        type: "save_error",
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 }

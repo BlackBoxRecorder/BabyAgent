@@ -36,7 +36,7 @@ export async function createHttpTransport(
   });
 
   const client = new Client(
-    { name: "deepcode", version: "1.0.0" },
+    { name: "babyAgent", version: "1.0.0" },
     { capabilities: {} },
   );
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * deepCode CLI — terminal AI agent entry point.
+ * babyAgent CLI — terminal AI agent entry point.
  *
  * Usage:
  *   DEEPSEEK_API_KEY="your-key" node dist/cli.js
@@ -8,7 +8,7 @@
  *   pnpm start
  */
 import { createApp } from "./cli/app-factory.js";
-import { AppLoop } from "./cli/app-loop.js";
+import { TuiLoop } from "./cli/tui-loop.js";
 
 // ============================================================================
 // Configuration
@@ -25,7 +25,7 @@ if (!API_KEY) {
 // Main
 // ============================================================================
 
-const { coordinator, commandRouter, display, mcpManager } = await createApp();
+const { coordinator, commandRouter, mcpManager } = await createApp();
 
-const loop = new AppLoop(coordinator, commandRouter, display, mcpManager);
+const loop = new TuiLoop(coordinator, commandRouter, mcpManager);
 loop.start();

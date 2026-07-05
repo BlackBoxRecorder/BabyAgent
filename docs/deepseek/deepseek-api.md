@@ -1299,7 +1299,7 @@ signal: AbortSignal.timeout(60000) // 60 seconds
 
 ## 附录：TypeScript 类型定义参考
 
-项目中 `@deepCode/llm` 包提供了完整的 TypeScript 类型定义，可在实际开发中直接引用：
+项目中 `@babyAgent/llm` 包提供了完整的 TypeScript 类型定义，可在实际开发中直接引用：
 
 ```typescript
 // 消息角色

@@ -40,7 +40,7 @@ export class SessionManager {
 
   constructor(sessionsDir?: string) {
     this.sessionsDir =
-      sessionsDir ?? path.join(os.homedir(), ".deepcode", "sessions");
+      sessionsDir ?? path.join(os.homedir(), ".babyAgent", "sessions");
   }
 
   // ==========================================================================

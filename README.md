@@ -1,17 +1,17 @@
-# DeepCode
+# babyAgent
 
 > Lightweight terminal AI agent — a local CLI alternative to Claude Code, powered by DeepSeek.
 
-DeepCode is an interactive, ReAct-based AI agent that runs in your terminal. It combines the reasoning power of DeepSeek LLMs with bash execution, filesystem operations, and MCP (Model Context Protocol) tools — all wrapped in a persistent, session-based REPL.
+babyAgent is an interactive, ReAct-based AI agent that runs in your terminal. It combines the reasoning power of DeepSeek LLMs with bash execution, filesystem operations, and MCP (Model Context Protocol) tools — all wrapped in a persistent, session-based REPL.
 
 ## Features
 
 - **🤖 ReAct Agent Loop** — The agent thinks, acts, and observes in a loop: it calls tools, processes results, and refines its response until the task is complete.
 - **💬 Interactive REPL** — Type any question or task; the agent responds with streaming output showing its reasoning and tool calls in real time.
-- **📂 Session Persistence** — Every conversation is saved to `~/.deepcode/sessions/`. Resume previous sessions with `/continue <id>`, list them with `/sessions`.
+- **📂 Session Persistence** — Every conversation is saved to `~/.babyAgent/sessions/`. Resume previous sessions with `/continue <id>`, list them with `/sessions`.
 - **🛠️ Built-in Tools** — Execute bash commands, read/write files, search with grep, and manage the filesystem — all through the agent.
-- **🔌 MCP Support** — Load tools from MCP servers (configured via `~/.deepcode/mcp.json`). Supports stdio and HTTP/SSE transports.
-- **🧠 Skill System** — Define reusable instruction files (SKILL.md with YAML frontmatter) placed in `~/.deepcode/skills/` or `.deepcode/skills/`. Skills can be auto-invoked by the model or manually triggered via `/skill:<name>`.
+- **🔌 MCP Support** — Load tools from MCP servers (configured via `~/.babyAgent/mcp.json`). Supports stdio and HTTP/SSE transports.
+- **🧠 Skill System** — Define reusable instruction files (SKILL.md with YAML frontmatter) placed in `~/.babyAgent/skills/` or `.babyAgent/skills/`. Skills can be auto-invoked by the model or manually triggered via `/skill:<name>`.
 - **📡 Streaming Output** — Real-time streaming of the model's reasoning and answers, with live tool call results.
 - **💾 Session Safety** — If the agent crashes mid-turn, the conversation is preserved and the session is restored to a clean state.
 
@@ -28,7 +28,7 @@ DeepCode is an interactive, ReAct-based AI agent that runs in your terminal. It 
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd deepCode
+cd babyAgent
 
 # Install dependencies
 pnpm install
@@ -54,7 +54,7 @@ Once the REPL starts, you can:
 Just type any question or task. The agent will use its tools to help you.
 
 ```
-deepCode - Terminal AI Agent
+babyAgent - Terminal AI Agent
 Type /help for commands, or just ask a question.
 
 > What files are in the current directory?
@@ -118,7 +118,7 @@ Here are the files in the current directory: ...
 | **Agent** | `src/index.ts` | Core ReAct loop: sends messages to LLM, executes tool calls, iterates until done |
 | **Coordinator** | `src/coordinator.ts` | Manages session lifecycle and turn execution; sits between the CLI display and the Agent + SessionManager |
 | **SessionManager** | `src/session.ts` | Persists conversations as metadata JSON + append-only JSONL turns |
-| **SkillManager** | `src/skills.ts` | Discovers and manages skills from `~/.deepcode/skills/` and `.deepcode/skills/` |
+| **SkillManager** | `src/skills.ts` | Discovers and manages skills from `~/.babyAgent/skills/` and `.babyAgent/skills/` |
 | **LLM Client** | `src/llm/` | DeepSeek API client with streaming support and tool-calling |
 | **Tool Interface** | `src/tools/interface/` | Generic Tool interface, JSON schema definitions, and registry |
 | **Built-in Tools** | `src/tools/` | Bash execution and filesystem tools (read, write, find, grep, edit) |
@@ -128,7 +128,7 @@ Here are the files in the current directory: ...
 ## Project Structure
 
 ```
-deepCode/
+babyAgent/
 ├── src/
 │   ├── cli/              # CLI application
 │   │   ├── app-factory.ts    # Dependency injection & wiring
@@ -179,7 +179,7 @@ deepCode/
 
 ### MCP Servers
 
-Configure MCP servers in `~/.deepcode/mcp.json`:
+Configure MCP servers in `~/.babyAgent/mcp.json`:
 
 ```json
 {
@@ -207,8 +207,8 @@ disable-model-invocation: false
 ```
 
 Place them in:
-- `~/.deepcode/skills/` (user-level, available across all projects)
-- `.deepcode/skills/` (project-level, overrides user-level with same name)
+- `~/.babyAgent/skills/` (user-level, available across all projects)
+- `.babyAgent/skills/` (project-level, overrides user-level with same name)
 
 ## Scripts
 

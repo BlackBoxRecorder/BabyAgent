@@ -20,7 +20,7 @@ async function createSkillDir(
 }
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "deepcode-skill-test-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "babyAgent-skill-test-"));
   try {
     await fn(dir);
   } finally {

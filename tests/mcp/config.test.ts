@@ -11,7 +11,7 @@ import {
   type McpConfig,
 } from "../../src/mcp/config.js";
 
-const TMP_DIR = path.join(os.tmpdir(), "deepcode-mcp-test-" + Date.now());
+const TMP_DIR = path.join(os.tmpdir(), "babyAgent-mcp-test-" + Date.now());
 
 function writeConfig(filename: string, content: object | string): string {
   const filePath = path.join(TMP_DIR, filename);

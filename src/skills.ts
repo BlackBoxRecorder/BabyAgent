@@ -3,8 +3,8 @@
  *
  * Skills are directories containing a SKILL.md with YAML frontmatter.
  * The manager scans two locations:
- *   - ~/.deepcode/skills/          (user-level)
- *   - cwd/.deepcode/skills/         (project-level)
+ *   - ~/.babyAgent/skills/          (user-level)
+ *   - cwd/.babyAgent/skills/         (project-level)
  *
  * Project-level skills override user-level skills with the same name.
  * Skills with disable-model-invocation:true are loaded but excluded
@@ -37,14 +37,14 @@ export class SkillManager {
   private projectSkillsDir: string;
 
   /**
-   * @param userSkillsDir    User-level skills dir (default ~/.deepcode/skills)
-   * @param projectSkillsDir Project-level skills dir (default cwd/.deepcode/skills)
+   * @param userSkillsDir    User-level skills dir (default ~/.babyAgent/skills)
+   * @param projectSkillsDir Project-level skills dir (default cwd/.babyAgent/skills)
    */
   constructor(userSkillsDir?: string, projectSkillsDir?: string) {
     this.userSkillsDir =
-      userSkillsDir ?? path.join(os.homedir(), ".deepcode", "skills");
+      userSkillsDir ?? path.join(os.homedir(), ".babyAgent", "skills");
     this.projectSkillsDir =
-      projectSkillsDir ?? path.join(process.cwd(), ".deepcode", "skills");
+      projectSkillsDir ?? path.join(process.cwd(), ".babyAgent", "skills");
   }
 
   // ==========================================================================

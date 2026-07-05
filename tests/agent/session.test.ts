@@ -38,7 +38,7 @@ describe("SessionManager", () => {
   beforeEach(async () => {
     tmpDir = path.join(
       os.tmpdir(),
-      `deepcode-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      `babyAgent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     manager = new SessionManager(tmpDir);
   });

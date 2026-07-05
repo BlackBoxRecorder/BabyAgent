@@ -88,71 +88,96 @@ export class CommandRouter {
   // Command handlers
   // ==========================================================================
 
+  /** Return the help text as a string (for TUI display in chat area). */
+  getHelpText(): string {
+    return [
+      "Available commands:",
+      "  /help       - Show this help message",
+      "  /new        - Start a new session",
+      "  /sessions   - List session history",
+      "  /continue <id> - Continue a previous session",
+      "  /tools      - List available tools",
+      "  /skills     - List available skills",
+      "  /skill:<name> - Invoke a skill by name",
+      "  /mcp        - List MCP server status",
+      "  /reset      - Same as /new",
+      "  /exit       - Exit the program",
+      "",
+      "Any other input will be sent to the AI agent.",
+    ].join("\n");
+  }
+
   private printHelp(): void {
-    this.display.println("Available commands:");
-    this.display.println("  /help       - Show this help message");
-    this.display.println("  /new        - Start a new session");
-    this.display.println("  /sessions   - List session history");
-    this.display.println("  /continue <id> - Continue a previous session");
-    this.display.println("  /tools      - List available tools");
-    this.display.println("  /skills     - List available skills");
-    this.display.println("  /skill:<name> - Invoke a skill by name");
-    this.display.println("  /mcp        - List MCP server status");
-    this.display.println("  /reset      - Same as /new");
-    this.display.println("  /exit       - Exit the program");
-    this.display.println("");
-    this.display.println("Any other input will be sent to the AI agent.");
+    this.display.println(this.getHelpText());
+  }
+
+  /** Return the tools list as a string (for TUI display in chat area). */
+  getToolsText(): string {
+    const lines = ["Available tools:"];
+    for (const tool of this.tools) {
+      lines.push(`  ${tool.name}: ${tool.description}`);
+    }
+    return lines.join("\n");
   }
 
   private printTools(): void {
-    this.display.println("Available tools:");
-    for (const tool of this.tools) {
-      this.display.println(`  ${tool.name}: ${tool.description}`);
-    }
+    this.display.println(this.getToolsText());
   }
 
-  private printMcpStatus(): void {
+  /** Return the MCP status as a string (for TUI display in chat area). */
+  getMcpStatusText(): string {
     if (this.mcpStatuses.length === 0) {
-      this.display.println("No MCP servers configured.");
-      this.display.println("Configure servers in ~/.deepcode/mcp.json");
-      return;
+      return [
+        "No MCP servers configured.",
+        "Configure servers in ~/.babyAgent/mcp.json",
+      ].join("\n");
     }
-    this.display.println("MCP servers:");
+    const lines = ["MCP servers:"];
     for (const s of this.mcpStatuses) {
       const status = s.ok ? "✓" : "✗";
       const toolInfo = s.ok ? `${s.toolCount} tool(s)` : s.error;
-      this.display.println(
+      lines.push(
         `  ${status} ${s.name.padEnd(25)} [${s.transport}]  ${toolInfo}`,
       );
     }
+    return lines.join("\n");
   }
 
-  private printSkills(): void {
+  private printMcpStatus(): void {
+    this.display.println(this.getMcpStatusText());
+  }
+
+  /** Return the skills list as a string (for TUI display in chat area). */
+  getSkillsText(): string {
     const skills = this.skillManager.getSkills();
     if (skills.length === 0) {
-      this.display.println("No skills found.");
-      this.display.println(
-        "Place skills in ~/.deepcode/skills/ or .deepcode/skills/",
-      );
-      return;
+      return [
+        "No skills found.",
+        "Place skills in ~/.babyAgent/skills/ or .babyAgent/skills/",
+      ].join("\n");
     }
-    this.display.println("Available skills:");
+    const lines = ["Available skills:"];
     for (const skill of skills) {
       const tag = skill.disableModelInvocation ? "[manual]" : "[auto]";
       const source = skill.source === "user" ? "user" : "project";
-      this.display.println(
+      lines.push(
         `  ${tag} ${skill.name.padEnd(20)} [${source}] ${skill.description}`,
       );
     }
+    return lines.join("\n");
   }
 
-  private async handleSessions(): Promise<void> {
+  private printSkills(): void {
+    this.display.println(this.getSkillsText());
+  }
+
+  /** Return the sessions list as a string (for TUI display in chat area). */
+  async getSessionsText(): Promise<string> {
     const sessions = await this.coordinator.listSessions();
     if (sessions.length === 0) {
-      this.display.println("No session history.");
-      return;
+      return "No session history.";
     }
-    this.display.println("Session history:");
+    const lines = ["Session history:"];
     const currentId = this.coordinator.currentSessionId;
     for (const s of sessions) {
       const marker = s.id === currentId ? "* " : "  ";
@@ -163,10 +188,15 @@ export class CommandRouter {
         minute: "2-digit",
       });
       const title = s.title.padEnd(40, " ");
-      this.display.println(
+      lines.push(
         `${marker}${s.id.slice(0, 8)}  [${date}]  ${title}  (${s.turnCount} turns)`,
       );
     }
+    return lines.join("\n");
+  }
+
+  private async handleSessions(): Promise<void> {
+    this.display.println(await this.getSessionsText());
   }
 
   private async handleContinue(sessionId: string): Promise<void> {

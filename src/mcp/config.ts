@@ -1,7 +1,7 @@
 /**
  * MCP configuration parsing and validation.
  *
- * Reads ~/.deepcode/mcp.json and produces a validated McpConfig.
+ * Reads ~/.babyAgent/mcp.json and produces a validated McpConfig.
  * Compatible with Claude Code / VS Code MCP configuration format.
  */
 import * as fs from "node:fs";
@@ -162,7 +162,7 @@ export function validateConfig(cfg: McpConfig): ServerValidationError[] {
  * Default path for the MCP configuration file.
  */
 export function defaultConfigPath(): string {
-  return path.join(os.homedir(), ".deepcode", "mcp.json");
+  return path.join(os.homedir(), ".babyAgent", "mcp.json");
 }
 
 /**
@@ -171,7 +171,7 @@ export function defaultConfigPath(): string {
  * Returns an empty config if the file doesn't exist.
  * Throws on JSON parse errors (caller should catch and warn).
  *
- * @param configPath Path to mcp.json. Defaults to ~/.deepcode/mcp.json.
+ * @param configPath Path to mcp.json. Defaults to ~/.babyAgent/mcp.json.
  */
 export function loadConfig(configPath?: string): {
   config: McpConfig;

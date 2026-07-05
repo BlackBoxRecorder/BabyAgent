@@ -28,7 +28,7 @@ export class AppLoop {
    * the readline stream closes.
    */
   start(): void {
-    this.display.println("deepCode - Terminal AI Agent");
+    this.display.println("babyAgent - Terminal AI Agent");
     this.display.println("Type /help for commands, or just ask a question.");
     this.display.println("");
 
