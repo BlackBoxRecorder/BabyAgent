@@ -1,0 +1,7 @@
+使用 curl 请求https://jsonplaceholder.typicode.com/posts 并获取结果,结果是 json 字符串,使用 bash 命令 jq 处理结果 json,提取出 id < 5 的 item,保存到 result.txt
+
+---
+
+解当前项目,然后编写一个 README.md
+
+---

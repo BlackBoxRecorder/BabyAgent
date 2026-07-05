@@ -1,0 +1,49 @@
+{
+  "name": "deepcode",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight terminal AI agent, similar to Claude Code",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "deepcode": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly && node scripts/bundle.mjs",
+    "clean": "rm -rf dist",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:chat": "npx tsx scripts/chat.ts",
+    "verify:chat-stream": "npx tsx scripts/chat-stream.ts",
+    "verify:chat-tools": "npx tsx scripts/chat-tools.ts",
+    "verify:chat-thinking": "npx tsx scripts/chat-thinking.ts"
+  },
+  "keywords": [
+    "ai-agent",
+    "cli",
+    "terminal",
+    "deepcode"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}
