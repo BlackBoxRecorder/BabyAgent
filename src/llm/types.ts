@@ -72,31 +72,16 @@ export interface ToolCall {
 export interface LLMResponse {
   content: string | null;
   tool_calls?: ToolCall[];
-  finish_reason: "stop" | "tool_calls" | "length";
+  finish_reason:
+    | "stop"
+    | "tool_calls"
+    | "length"
+    | "content_filter"
+    | "insufficient_system_resource";
   reasoning_content?: string;
-  /** Token usage stats from the API response */
-  usage?: TokenUsage;
 }
 
-/**
- * Turn-level aggregated token usage across all LLM calls in a Turn.
- * Only present on successful (non-aborted, non-error) turns. */
-export interface TurnUsage {
-  /** Sum of prompt_tokens across all LLM calls */
-  promptTokens: number;
-  /** Sum of completion_tokens across all LLM calls */
-  completionTokens: number;
-  /** Sum of total_tokens across all LLM calls */
-  totalTokens: number;
-  /** Sum of prompt_cache_hit_tokens (DeepSeek) */
-  cacheHitTokens: number;
-  /** Sum of prompt_cache_miss_tokens (DeepSeek) */
-  cacheMissTokens: number;
-  /** Sum of reasoning_tokens across all LLM calls (DeepSeek) */
-  reasoningTokens: number;
-}
-
-/** Computed billing for a Turn based on TurnUsage and Model cost rates. */
+/** Computed billing for a Turn based on TokenUsage and Model cost rates. */
 export interface BillingInfo {
   inputCost: number;
   outputCost: number;
@@ -138,33 +123,10 @@ export interface LLMStreamChunk {
   finish_reason?: "stop" | "tool_calls" | "length";
   /** Only present in the last chunk */
   usage?: TokenUsage;
+  /** Computed billing based on usage and model cost rates — only present in the last chunk */
+  billing?: BillingInfo;
   /** Aggregated full response — only present in the last chunk */
-  accumulated?: LLMResponse;
-}
-
-// ============================================================================
-// Configuration Types
-// ============================================================================
-
-/** DeepSeek request-level configuration (can override defaults per call). */
-export interface DeepSeekRequestConfig {
-  model?: string;
-  thinking?: {
-    type: "enabled" | "disabled";
-  };
-  reasoning_effort?: "high" | "max";
-  max_tokens?: number;
-  temperature?: number;
-  top_p?: number;
-  tool_choice?: "none" | "auto" | "required";
-  stream?: boolean;
-}
-
-/** DeepSeek client configuration. */
-export interface DeepSeekConfig {
-  apiKey: string;
-  baseUrl?: string;
-  defaults?: DeepSeekRequestConfig;
+  fullResponse?: LLMResponse;
 }
 
 import type { LLMFunctionDef } from "../tools/interface/index.js";
@@ -177,13 +139,15 @@ import type { LLMFunctionDef } from "../tools/interface/index.js";
 export interface LLMClient {
   chatStream(
     messages: Message[],
-    tools?: LLMFunctionDef[],
-    options?: Record<string, unknown>,
+    tools: LLMFunctionDef[],
   ): AsyncGenerator<LLMStreamChunk>;
 
   /**
-   * Switch the default model at runtime.
-   * Only meaningful for providers that expose multiple models.
+   * Rotate to the next model in the configured model list.
+   * Wraps around to index 0 after the last model.
    */
-  setDefaultModel(modelId: string): void;
+  switchModel(): void;
+
+  /** The model ID currently in use. */
+  readonly currentModelId: string;
 }

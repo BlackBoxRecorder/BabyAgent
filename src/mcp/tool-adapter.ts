@@ -7,11 +7,7 @@
  * 3. Wrap MCP callTool results into ToolResult format
  * 4. Extract text from MCP content arrays
  */
-import type {
-  Tool,
-  JsonSchema,
-  JsonSchemaProperty,
-} from "../tools/interface/index.js";
+import type { Tool, JsonSchema } from "../tools/interface/index.js";
 import type {
   McpTransport,
   McpToolDef,

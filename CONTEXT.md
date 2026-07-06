@@ -36,6 +36,10 @@ _Avoid_: Plugin, extension, prompt template
 A TUI component rendered above the main chat area — modals, selection dialogs, confirmation prompts. Uses Pi TUI's `showOverlay()`.
 _Avoid_: Popup, dialog, modal (use "Overlay" for consistency with Pi TUI terminology)
 
+**Autocomplete Session History**:
+The mechanism for browsing historical sessions via the `/sessions` slash command's autocomplete dropdown. Replaces the previous Ctrl+H keyboard shortcut and overlay display. Selecting a session from the autocomplete list directly resumes that session.
+_Avoid_: Session browser, history popup, session selector
+
 **Editor**:
 The multi-line text input area at the bottom of the TUI. Supports autocomplete, paste handling, and IME. From Pi TUI's `Editor` component.
 _Avoid_: Input box, text field, prompt line
@@ -47,6 +51,10 @@ _Avoid_: GUI, curses, screen
 **Model Config**:
 A JSON file at `~/.babyAgent/models.json` defining providers, their API endpoints, auth, and available models. Single source of truth for LLM connectivity.
 _Avoid_: Config file, settings, provider config
+
+**System Prompt**:
+A Markdown file at `~/.babyAgent/system_prompt.md` containing the base instructions for the AI agent. Loaded at startup and concatenated with skills. Users can customize agent behavior by editing this file.
+_Avoid_: Prompt file, system instructions, base prompt
 
 **Provider**:
 An LLM service (e.g. DeepSeek) with a base URL, API key, and a list of models. `providers` mapping in the model config.
@@ -75,3 +83,15 @@ _Avoid_: Footer, status line, bottom bar
 **Model Name**:
 The identifier string of the currently active LLM model (e.g. `deepseek-chat`). Exposed via `Coordinator.currentModel` for display in the TUI status bar.
 _Avoid_: Model ID, model version
+
+**Logger**:
+The centralized logging component that records agent interactions to files. Manages log levels, formatting, and file I/O. Configured via environment variables.
+_Avoid_: Recorder, tracker
+
+**Log Entry**:
+A structured JSON object containing a timestamp, log level, component name, event type, and event-specific data. Written to log files.
+_Avoid_: Log record, log line
+
+**Log File**:
+A text file in `~/.babyAgent/logs/` containing log entries for a specific session and date. Named `{date}/session-{sessionId}.log`.
+_Avoid_: Log output, log document

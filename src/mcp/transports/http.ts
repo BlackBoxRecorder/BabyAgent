@@ -1,8 +1,8 @@
 /**
- * HTTP/SSE transport — connects to a remote MCP server via HTTP with SSE.
+ * HTTP/Streamable HTTP transport — connects to a remote MCP server via HTTP.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { McpServerConfig } from "../config.js";
 import type {
   McpTransport,
@@ -13,10 +13,10 @@ import type {
 import { withTimeout } from "./with-timeout.js";
 
 /**
- * Create an MCP transport over HTTP/SSE.
+ * Create an MCP transport over HTTP (Streamable HTTP).
  *
  * Connects to a remote MCP server at the given URL using
- * Server-Sent Events for receiving messages and POST for sending.
+ * HTTP POST for sending and HTTP GET with SSE for receiving.
  *
  * @param config - The HTTP server config (must have `url`).
  * @param timeoutMs - Connection timeout in milliseconds (default 30s).
@@ -29,7 +29,7 @@ export async function createHttpTransport(
     throw new Error("HTTP transport requires a 'url' field");
   }
 
-  const sseTransport = new SSEClientTransport(new URL(config.url), {
+  const transport = new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: config.headers
       ? { headers: config.headers as Record<string, string> }
       : undefined,
@@ -42,7 +42,7 @@ export async function createHttpTransport(
 
   // Connect with timeout
   await withTimeout(
-    client.connect(sseTransport),
+    client.connect(transport),
     timeoutMs,
     `Connection to HTTP server "${config.url}" timed out after ${timeoutMs}ms`,
   );

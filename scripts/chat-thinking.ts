@@ -16,7 +16,7 @@ import {
 } from "./_common.js";
 import type { Message, LLMResponse } from "../src/llm/index.js";
 
-const client = createClient();
+const client = await createClient();
 
 // ── 1. 非流式思考模式 ──────────────────────────────────
 
@@ -29,9 +29,7 @@ async function thinkingNonStream() {
 
   const start = Date.now();
   let res: LLMResponse | undefined;
-  for await (const chunk of client.chatStream(messages, undefined, {
-    thinking: { type: "enabled" },
-  })) {
+  for await (const chunk of client.chatStream(messages, undefined)) {
     if (chunk.accumulated) {
       res = chunk.accumulated;
     }
@@ -73,9 +71,7 @@ async function thinkingStream() {
   let content = "";
   let chunkCount = 0;
 
-  for await (const chunk of client.chatStream(messages, undefined, {
-    thinking: { type: "enabled" },
-  })) {
+  for await (const chunk of client.chatStream(messages, undefined)) {
     chunkCount++;
 
     if (chunk.delta.reasoning_content) {
@@ -134,9 +130,7 @@ async function thinkingDisabled() {
 
   const start = Date.now();
   let res: LLMResponse | undefined;
-  for await (const chunk of client.chatStream(messages, undefined, {
-    thinking: { type: "disabled" },
-  })) {
+  for await (const chunk of client.chatStream(messages, undefined)) {
     if (chunk.accumulated) {
       res = chunk.accumulated;
     }

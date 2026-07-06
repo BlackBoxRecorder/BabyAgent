@@ -598,6 +598,7 @@ export function createGrepTool(cwd: string, rgPath?: string): ToolDefinition {
               "--line-number",
               "--color=never",
               "--hidden",
+              "--no-ignore",
             ];
             if (ignoreCase) args.push("--ignore-case");
             if (literal) args.push("--fixed-strings");
@@ -789,6 +790,7 @@ export function createFindTool(cwd: string, fdPath?: string): ToolDefinition {
             const args: string[] = [
               "--color=never",
               "--hidden",
+              "--no-ignore",
               "--type",
               "file",
               "--type",
@@ -796,7 +798,7 @@ export function createFindTool(cwd: string, fdPath?: string): ToolDefinition {
             ];
             args.push("--glob", pattern);
             args.push("--max-results", String(effectiveLimit));
-            args.push(".", searchPath);
+            args.push(searchPath);
 
             const child = spawn(fd, args, {
               stdio: ["ignore", "pipe", "pipe"],

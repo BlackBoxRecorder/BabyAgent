@@ -68,7 +68,7 @@ function createMockLLMWithToolCall(
     }
   }
 
-  return { chatStream };
+  return { chatStream, switchModel: () => {}, currentModelId: "mock-model" };
 }
 
 /**
@@ -79,7 +79,7 @@ function createThrowingMockLLM(errorMsg: string): LLMClient {
     throw new Error(errorMsg);
   }
 
-  return { chatStream };
+  return { chatStream, switchModel: () => {}, currentModelId: "mock-model" };
 }
 
 // ============================================================================
@@ -238,6 +238,99 @@ describe("ConversationCoordinator", () => {
     const assistantMsg = messages.find((m: any) => m.role === "assistant");
     expect(assistantMsg).toBeDefined();
     expect(assistantMsg!.content).toContain("Agent error");
+  });
+
+  // ====================================================================
+  // Token usage accumulation
+  // ====================================================================
+
+  it("should accumulate token usage from LLM response", async () => {
+    // Mock LLM that returns usage data
+    const mockLLM: LLMClient = {
+      async *chatStream(): AsyncGenerator<LLMStreamChunk> {
+        yield {
+          delta: { content: "Hello!" },
+          finish_reason: "stop",
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            prompt_cache_hit_tokens: 50,
+            prompt_cache_miss_tokens: 50,
+            completion_tokens_details: {
+              reasoning_tokens: 10,
+            },
+          },
+          accumulated: {
+            content: "Hello!",
+            tool_calls: undefined,
+            finish_reason: "stop",
+          },
+        };
+      },
+      switchModel: () => {},
+      currentModelId: "mock-model",
+    };
+
+    const agent = new Agent({ llm: mockLLM, tools: [] });
+    const coordinator = new ConversationCoordinator({
+      agent,
+      sessionManager,
+    });
+
+    // Execute a turn
+    const events = await consumeTurn(coordinator, "Hello!");
+    const doneEvent = events.find((e: any) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent.result.success).toBe(true);
+
+    // Verify usage is accumulated
+    expect(coordinator.sessionUsage).not.toBeNull();
+    expect(coordinator.sessionUsage!.prompt_tokens).toBe(100);
+    expect(coordinator.sessionUsage!.completion_tokens).toBe(20);
+    expect(coordinator.sessionUsage!.total_tokens).toBe(120);
+    expect(coordinator.sessionUsage!.prompt_cache_hit_tokens).toBe(50);
+    expect(
+      coordinator.sessionUsage!.completion_tokens_details?.reasoning_tokens,
+    ).toBe(10);
+
+    // Verify billing is computed
+    expect(coordinator.sessionBilling).toBeNull(); // No models configured
+  });
+
+  it("should show null usage when LLM returns no usage data", async () => {
+    // Mock LLM that does NOT return usage data
+    const mockLLM: LLMClient = {
+      async *chatStream(): AsyncGenerator<LLMStreamChunk> {
+        yield {
+          delta: { content: "Hello!" },
+          finish_reason: "stop",
+          accumulated: {
+            content: "Hello!",
+            tool_calls: undefined,
+            finish_reason: "stop",
+            // No usage field
+          },
+        };
+      },
+      switchModel: () => {},
+      currentModelId: "mock-model",
+    };
+
+    const agent = new Agent({ llm: mockLLM, tools: [] });
+    const coordinator = new ConversationCoordinator({
+      agent,
+      sessionManager,
+    });
+
+    // Execute a turn
+    const events = await consumeTurn(coordinator, "Hello!");
+    const doneEvent = events.find((e: any) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+
+    // Usage should be null
+    expect(coordinator.sessionUsage).toBeNull();
+    expect(coordinator.sessionBilling).toBeNull();
   });
 
   // ====================================================================

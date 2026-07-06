@@ -19,7 +19,6 @@ export interface ModelConfigFile {
 export interface ProviderConfig {
   baseUrl: string;
   apiKey: string;
-  defaultModel?: string;
   models: ModelInfo[];
 }
 
@@ -39,11 +38,35 @@ export interface ModelCost {
   cacheWrite: number;
 }
 
+/**
+ * Flattened model entry — one entry per model with provider-level
+ * baseUrl and apiKey inlined. Used by ChatClient for model rotation.
+ */
+export interface ModelEntry {
+  /** Provider's base URL (e.g. https://api.deepseek.com) */
+  baseUrl: string;
+  /** Resolved API key for this provider */
+  apiKey: string;
+  /** Model identifier (e.g. "deepseek-v4-flash") */
+  modelId: string;
+  /** Display name */
+  name: string;
+  /** Supported input modalities */
+  input: string[];
+  /** Context window size in tokens */
+  contextWindow: number;
+  /** Maximum output tokens */
+  maxTokens: number;
+  /** Pricing information */
+  cost: ModelCost;
+}
+
 // ============================================================================
 // Loader
 // ============================================================================
 
-const CONFIG_PATH = path.join(os.homedir(), ".babyAgent", "models.json");
+const CONFIG_DIR = path.join(os.homedir(), ".babyAgent");
+const CONFIG_PATH = path.join(CONFIG_DIR, "models.json");
 
 /**
  * Load and resolve the model configuration file.
@@ -53,6 +76,13 @@ const CONFIG_PATH = path.join(os.homedir(), ".babyAgent", "models.json");
 export async function loadModelConfig(): Promise<ModelConfigFile> {
   let raw: string;
   try {
+    const exists = await fs
+      .access(CONFIG_PATH)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      await createDefaultConfig();
+    }
     raw = await fs.readFile(CONFIG_PATH, "utf-8");
   } catch {
     throw new Error(
@@ -82,8 +112,12 @@ export async function loadModelConfig(): Promise<ModelConfigFile> {
     );
   }
 
-  // Resolve env vars in all string values (recursive)
-  resolveEnvVars(config);
+  // Resolve $VAR_NAME / ${VAR_NAME} in provider apiKey fields
+  for (const provider of Object.values(config.providers)) {
+    if (typeof provider.apiKey === "string") {
+      provider.apiKey = resolveEnvVarString(provider.apiKey);
+    }
+  }
 
   // Validate each provider
   for (const [name, provider] of Object.entries(config.providers)) {
@@ -111,31 +145,87 @@ export async function loadModelConfig(): Promise<ModelConfigFile> {
         throw new Error(`Provider "${name}", models[${i}]: missing "name".`);
       }
     }
-
-    // Set default model to first model if not specified
-    if (!provider.defaultModel) {
-      provider.defaultModel = provider.models[0].id;
-    }
   }
 
   return config;
 }
 
 /**
- * Get the deepseek provider config from the model config.
- * Fail fast if it's missing — this is the only supported provider for now.
+ * Flatten all providers' models into a single array.
+ * Each entry carries provider-level baseUrl + apiKey alongside model info,
+ * so ChatClient can rotate across models from any provider.
  */
-export function getDeepSeekProvider(config: ModelConfigFile): ProviderConfig {
-  const provider = config.providers["deepseek"];
-  if (!provider) {
-    const available = Object.keys(config.providers).join(", ");
-    throw new Error(
-      `Provider "deepseek" not found in model config. ` +
-        `Available providers: ${available || "(none)"}. ` +
-        `Only "deepseek" is currently supported.`,
-    );
+export function getAllModels(config: ModelConfigFile): ModelEntry[] {
+  const entries: ModelEntry[] = [];
+  for (const [, provider] of Object.entries(config.providers)) {
+    for (const model of provider.models) {
+      entries.push({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        modelId: model.id,
+        name: model.name,
+        input: model.input,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        cost: model.cost,
+      });
+    }
   }
-  return provider;
+  return entries;
+}
+
+/**
+ * Default config template with deepseek provider.
+ * Uses $DEEPSEEK_API_KEY env var for the API key.
+ */
+const DEFAULT_CONFIG: ModelConfigFile = {
+  providers: {
+    deepseek: {
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "$DEEPSEEK_API_KEY",
+      models: [
+        {
+          id: "deepseek-v4-flash",
+          name: "deepseek-v4-flash",
+          input: ["text"],
+          contextWindow: 1000000,
+          maxTokens: 384000,
+          cost: {
+            input: 1,
+            output: 3,
+            cacheRead: 0.02,
+            cacheWrite: 0,
+          },
+        },
+        {
+          id: "deepseek-v4-pro",
+          name: "deepseek-v4-pro",
+          input: ["text"],
+          contextWindow: 1000000,
+          maxTokens: 384000,
+          cost: {
+            input: 3,
+            output: 6,
+            cacheRead: 0.025,
+            cacheWrite: 0,
+          },
+        },
+      ],
+    },
+  },
+};
+
+/**
+ * Create the default models.json config file.
+ * Creates the ~/.babyAgent directory if needed and writes the default deepseek config.
+ */
+async function createDefaultConfig(): Promise<void> {
+  await fs.mkdir(CONFIG_DIR, { recursive: true });
+  await fs.writeFile(
+    CONFIG_PATH,
+    JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n",
+    "utf-8",
+  );
 }
 
 // ============================================================================
@@ -145,55 +235,11 @@ export function getDeepSeekProvider(config: ModelConfigFile): ProviderConfig {
 const ENV_VAR_RE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
 
 /**
- * Recursively walk an object tree and resolve $VAR_NAME / ${VAR_NAME}
- * references in all string values from process.env. Fail fast if a
- * referenced env var is not set.
- */
-function resolveEnvVars(obj: unknown, visited?: Set<unknown>): void {
-  visited ??= new Set();
-  if (visited.has(obj)) return; // prevent circular references
-  visited.add(obj);
-
-  if (typeof obj === "string") {
-    // This doesn't modify the string in-place because primitives are
-    // immutable — instead we're relying on the fact that this function
-    // processes parent objects and replaces string values. See below.
-    return;
-  }
-
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) {
-      const val = obj[i];
-      if (typeof val === "string") {
-        obj[i] = resolveEnvVarString(val);
-      } else if (val !== null && typeof val === "object") {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        resolveEnvVars(val as Record<string, unknown>, visited);
-      }
-    }
-    return;
-  }
-
-  if (obj !== null && typeof obj === "object") {
-    const record = obj as Record<string, unknown>;
-    for (const key of Object.keys(record)) {
-      const val = record[key];
-      if (typeof val === "string") {
-        record[key] = resolveEnvVarString(val);
-      } else if (val !== null && typeof val === "object") {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        resolveEnvVars(val as Record<string, unknown>, visited);
-      }
-    }
-  }
-}
-
-/**
  * Replace all $VAR_NAME / ${VAR_NAME} references with process.env values.
  * Throws if a referenced env var is not set.
  */
 function resolveEnvVarString(value: string): string {
-  return value.replace(ENV_VAR_RE, (match, varName: string) => {
+  return value.replace(ENV_VAR_RE, (_match, varName: string) => {
     const envVal = process.env[varName];
     if (envVal === undefined) {
       throw new Error(

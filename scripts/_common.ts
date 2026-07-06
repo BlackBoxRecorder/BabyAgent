@@ -3,35 +3,20 @@
 /**
  * Shared utilities for LLM verification scripts.
  */
-import { DeepSeekClient } from "../src/llm/index.js";
-import type { DeepSeekConfig } from "../src/llm/types.js";
+import { ChatClient } from "../src/llm/index.js";
+import {
+  loadModelConfig,
+  getAllModels,
+  type ModelEntry,
+} from "../src/llm/models.js";
 
 // ── Client ──────────────────────────────────────────────
 
-/** Read API key from env, exit if missing. */
-export function getApiKey(): string {
-  const key = process.env.DEEPSEEK_API_KEY;
-  if (!key) {
-    console.error("❌ 缺少环境变量 DEEPSEEK_API_KEY");
-    process.exit(1);
-  }
-  return key;
-}
-
 /** Create a DeepSeekClient with defaults from env. */
-export function createClient(
-  overrides?: Partial<DeepSeekConfig>,
-): DeepSeekClient {
-  const apiKey = getApiKey();
-  const baseUrl = process.env.DEEPSEEK_BASE_URL;
-  return new DeepSeekClient({
-    apiKey,
-    baseUrl,
-    ...overrides,
-    defaults: {
-      ...overrides?.defaults,
-    },
-  });
+export async function createClient(): Promise<ChatClient> {
+  const modelConfig = await loadModelConfig();
+  const allModels = getAllModels(modelConfig);
+  return new ChatClient(allModels);
 }
 
 // ── Formatting ──────────────────────────────────────────

@@ -2,12 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
-import type {
-  Message,
-  TokenUsage,
-  TurnUsage,
-  BillingInfo,
-} from "./llm/index.js";
+import type { Message, TokenUsage, BillingInfo } from "./llm/index.js";
 
 // ============================================================================
 // Types
@@ -28,9 +23,8 @@ export interface TurnRecord {
   timestamp: string;
   userInput: string;
   messages: Message[];
-  usage?: TokenUsage;
   /** Aggregated turn-level token usage (sum of all LLM calls) */
-  turnUsage?: TurnUsage;
+  usage?: TokenUsage;
   /** Computed billing for this turn */
   billing?: BillingInfo;
 }

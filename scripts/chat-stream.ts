@@ -16,7 +16,7 @@ import {
 } from "./_common.js";
 import type { Message } from "../src/llm/index.js";
 
-const client = createClient();
+const client = await createClient();
 
 // ── 1. 基础流式对话 ────────────────────────────────────
 

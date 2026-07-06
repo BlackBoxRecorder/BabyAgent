@@ -1,5 +1,8 @@
 /**
- * DeepSeek API client implementation using native fetch.
+ * Generic LLM client — provider-agnostic chat completions with model rotation.
+ *
+ * Uses the OpenAI-compatible /chat/completions endpoint via native fetch.
+ * Supports multiple models across providers via a flat ModelEntry list.
  */
 import type {
   LLMClient,
@@ -7,88 +10,50 @@ import type {
   Message,
   ToolCall,
   TokenUsage,
-  DeepSeekRequestConfig,
-  DeepSeekConfig,
+  BillingInfo,
 } from "./types.js";
 import type { LLMFunctionDef } from "../tools/interface/index.js";
+import type { ModelEntry } from "./models.js";
 
-export class DeepSeekClient implements LLMClient {
-  private config: Required<Omit<DeepSeekConfig, "defaults">> & {
-    defaults: Required<DeepSeekRequestConfig>;
-  };
+export class ChatClient implements LLMClient {
+  private models: ModelEntry[];
+  private _currentModelIndex = 0;
 
-  /** The model id currently in use — can be changed at runtime via setDefaultModel(). */
-  private currentModel: string;
+  constructor(models: ModelEntry[]) {
+    if (models.length === 0) {
+      throw new Error("ChatClient requires at least one model entry.");
+    }
+    this.models = models;
+  }
 
-  private static DEFAULT_BASE_URL = "https://api.deepseek.com";
-  private static DEFAULT_REQUEST_CONFIG: Omit<
-    Required<DeepSeekRequestConfig>,
-    "model"
-  > = {
-    thinking: { type: "enabled" },
-    reasoning_effort: "high",
-    max_tokens: 1000 * 64,
-    temperature: 1,
-    top_p: 1,
-    tool_choice: "auto",
-    stream: false,
-  };
-
-  constructor(config: DeepSeekConfig) {
-    this.currentModel = config.defaults?.model ?? "deepseek-v4-flash";
-    this.config = {
-      apiKey: config.apiKey,
-      baseUrl: config.baseUrl ?? DeepSeekClient.DEFAULT_BASE_URL,
-      defaults: {
-        model: this.currentModel,
-        ...DeepSeekClient.DEFAULT_REQUEST_CONFIG,
-        ...config.defaults,
-      },
-    };
+  /** The model ID currently in use. */
+  get currentModelId(): string {
+    return this.models[this._currentModelIndex].modelId;
   }
 
   /**
-   * Switch the default model at runtime.
-   * Subsequent chatStream calls will use this model unless overridden in options.
+   * Rotate to the next model in the list.
+   * Wraps around to index 0 after the last model.
    */
-  setDefaultModel(modelId: string): void {
-    this.currentModel = modelId;
-    this.config.defaults.model = modelId;
-  }
-
-  /**
-   * Build request body payload for DeepSeek API.
-   */
-  private _buildRequestBody(
-    messages: Message[],
-    tools?: LLMFunctionDef[],
-    options?: Record<string, unknown>,
-  ): Record<string, any> {
-    const mergedConfig = {
-      ...this.config.defaults,
-      ...options,
-    } as DeepSeekRequestConfig;
-
-    return {
-      model: mergedConfig.model,
-      messages,
-      thinking: mergedConfig.thinking,
-      reasoning_effort: mergedConfig.reasoning_effort,
-      max_tokens: mergedConfig.max_tokens,
-      temperature: mergedConfig.temperature,
-      top_p: mergedConfig.top_p,
-      tool_choice: mergedConfig.tool_choice,
-      stream: true,
-      tools: tools?.length ? tools : null,
-    };
+  switchModel(): void {
+    this._currentModelIndex =
+      (this._currentModelIndex + 1) % this.models.length;
   }
 
   async *chatStream(
     messages: Message[],
     tools?: LLMFunctionDef[],
-    options?: Record<string, unknown>,
   ): AsyncGenerator<LLMStreamChunk> {
-    const body = this._buildRequestBody(messages, tools, options);
+    const model = this.models[this._currentModelIndex];
+
+    const body = {
+      model: model.modelId,
+      messages,
+      reasoning_effort: "max",
+      max_tokens: model.maxTokens,
+      stream: true,
+      tools: tools?.length ? tools : null,
+    };
 
     // Use AbortController instead of AbortSignal.timeout() so we can
     // clear the timer after the stream finishes — otherwise the timeout
@@ -97,11 +62,11 @@ export class DeepSeekClient implements LLMClient {
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     try {
-      const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+      const response = await fetch(`${model.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.apiKey}`,
+          Authorization: `Bearer ${model.apiKey}`,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -109,9 +74,7 @@ export class DeepSeekClient implements LLMClient {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(
-          `DeepSeek API error (${response.status}): ${errorText}`,
-        );
+        throw new Error(`LLM API error (${response.status}): ${errorText}`);
       }
 
       const reader = response.body!.getReader();
@@ -124,7 +87,7 @@ export class DeepSeekClient implements LLMClient {
       const toolCalls: ToolCall[] = [];
       let finishReason: "stop" | "tool_calls" | "length" | undefined;
       let usage: TokenUsage | undefined;
-
+      let billing: BillingInfo | undefined;
       const CHUNK_READ_TIMEOUT = 30000; // 30s between chunks
 
       try {
@@ -165,8 +128,9 @@ export class DeepSeekClient implements LLMClient {
               yield {
                 delta: {},
                 finish_reason: finishReason,
+                billing,
                 usage,
-                accumulated: {
+                fullResponse: {
                   content: content || null,
                   tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
                   finish_reason: finishReason ?? "stop",
@@ -219,6 +183,10 @@ export class DeepSeekClient implements LLMClient {
                 };
               }
 
+              if (usage) {
+                billing = this._computeBilling(usage);
+              }
+
               yield {
                 delta: {
                   content: delta?.content,
@@ -226,6 +194,8 @@ export class DeepSeekClient implements LLMClient {
                   tool_calls: delta?.tool_calls,
                 },
                 finish_reason: choice?.finish_reason,
+                usage: usage,
+                billing: billing,
               };
             } catch {
               // Skip malformed JSON chunks
@@ -244,5 +214,23 @@ export class DeepSeekClient implements LLMClient {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  /**
+   * Compute billing from usage and current model's cost rates.
+   * Returns BillingInfo with costs broken down by category.
+   */
+  private _computeBilling(usage: TokenUsage): BillingInfo {
+    const cost = this.models[this._currentModelIndex].cost;
+    const PER_MILLION = 1_000_000;
+    const inputCost = (usage.prompt_tokens * cost.input) / PER_MILLION;
+    const outputCost = (usage.completion_tokens * cost.output) / PER_MILLION;
+    const cacheReadCost =
+      ((usage.prompt_cache_hit_tokens ?? 0) * cost.cacheRead) / PER_MILLION;
+    const cacheWriteCost =
+      ((usage.prompt_cache_miss_tokens ?? 0) * cost.cacheWrite) / PER_MILLION;
+    const totalCost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+
+    return { inputCost, outputCost, cacheReadCost, cacheWriteCost, totalCost };
   }
 }

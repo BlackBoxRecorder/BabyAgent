@@ -13,20 +13,22 @@ import {
   Markdown,
   Text,
   Loader,
-  SelectList,
   Spacer,
   CombinedAutocompleteProvider,
   matchesKey,
   Key,
+  isKeyRelease,
   type EditorTheme,
   type MarkdownTheme,
-  type SelectListTheme,
 } from "@earendil-works/pi-tui";
 import type { ConversationCoordinator } from "../coordinator.js";
-import type { McpManager } from "../mcp/index.js";
-import type { CommandRouter } from "./command-router.js";
+import type { McpManager, ServerStatus } from "../mcp/index.js";
+import type { Tool } from "../tools/interface/index.js";
+import type { SkillManager } from "../skills.js";
+import { SessionAutocompleteProvider } from "./session-autocomplete.js";
+import { SkillAutocompleteProvider } from "./skill-autocomplete.js";
 import type { ExecuteTurnOptions } from "../coordinator.js";
-import type { ModelInfo } from "../llm/models-config.js";
+import type { ModelEntry } from "../llm/models.js";
 
 // ============================================================================
 // ANSI Style Helpers (no external dependency needed)
@@ -90,16 +92,15 @@ const assistantDefaultStyle: import("@earendil-works/pi-tui").DefaultTextStyle =
     color: ansi.white,
   };
 
-/** Reuse the same select-list styling as the editor theme. */
-const selectListTheme: SelectListTheme = editorTheme.selectList;
-
 // ============================================================================
 // TuiLoop
 // ============================================================================
 
 export class TuiLoop {
   private coordinator: ConversationCoordinator;
-  private commandRouter: CommandRouter;
+  private skillManager: SkillManager;
+  private tools: readonly Tool[];
+  private mcpStatuses: readonly ServerStatus[];
   private mcpManager: McpManager;
   private tui: TUI;
   private editor: Editor;
@@ -118,25 +119,31 @@ export class TuiLoop {
   private loader: Loader;
   /** Abort controller for cancelling in-flight agent turn. */
   private abortController: AbortController | null = null;
-  /** Available models for switching via Ctrl+P. */
-  private models: ModelInfo[];
+
   /** Currently active model ID. */
   private currentModelId: string;
   /** Info bar at the bottom: model name, token usage, cost. */
   private infoBar: Text;
+  /** Temporary turn-level usage for real-time display during streaming. */
+  private turnUsage: {
+    prompt: number;
+    completion: number;
+    total: number;
+  } | null = null;
 
   constructor(
     coordinator: ConversationCoordinator,
-    commandRouter: CommandRouter,
+    skillManager: SkillManager,
+    tools: readonly Tool[],
+    mcpStatuses: readonly ServerStatus[],
     mcpManager: McpManager,
-    models: ModelInfo[],
-    defaultModelId: string,
   ) {
     this.coordinator = coordinator;
-    this.commandRouter = commandRouter;
+    this.skillManager = skillManager;
+    this.tools = tools;
+    this.mcpStatuses = mcpStatuses;
     this.mcpManager = mcpManager;
-    this.models = models;
-    this.currentModelId = defaultModelId;
+    this.currentModelId = this.coordinator.currentModel ?? "";
 
     // Create terminal and TUI
     const terminal = new ProcessTerminal();
@@ -155,31 +162,33 @@ export class TuiLoop {
     this.editor.onSubmit = (text: string) => this.handleSubmit(text);
 
     // Set up autocomplete with slash commands
-    this.editor.setAutocompleteProvider(
-      new CombinedAutocompleteProvider(
-        [
-          { name: "help", description: "Show help message" },
-          { name: "new", description: "Start a new session (or Ctrl+N)" },
-          { name: "reset", description: "Same as /new" },
-          { name: "sessions", description: "List session history" },
-          {
-            name: "continue",
-            description: "Continue a previous session",
-            argumentHint: "<id>",
-          },
-          { name: "tools", description: "List available tools" },
-          { name: "skills", description: "List available skills" },
-          {
-            name: "skill:",
-            description: "Invoke a skill by name. E.g. /skill:code-review",
-            argumentHint: "<name>",
-          },
-          { name: "mcp", description: "List MCP server status" },
-          { name: "exit", description: "Exit the program" },
-        ],
-        process.cwd(),
-      ),
+    const baseProvider = new CombinedAutocompleteProvider(
+      [
+        { name: "help", description: "Show help message" },
+        { name: "new", description: "Start a new session (or Ctrl+N)" },
+        { name: "reset", description: "Same as /new" },
+        { name: "sessions", description: "List session history" },
+        { name: "tools", description: "List available tools" },
+        { name: "skill", description: "Invoke a skill by name" },
+        { name: "mcp", description: "List MCP server status" },
+        { name: "exit", description: "Exit the program" },
+        { name: "q", description: "Exit the program" },
+        { name: "quit", description: "Exit the program" },
+      ],
+      process.cwd(),
     );
+    const sessionProvider = new SessionAutocompleteProvider(
+      baseProvider,
+      this.coordinator,
+      {
+        onSessionSelect: (sessionId) => this.handleSessionSelect(sessionId),
+      },
+    );
+    const skillProvider = new SkillAutocompleteProvider(
+      this.skillManager,
+      sessionProvider,
+    );
+    this.editor.setAutocompleteProvider(skillProvider);
 
     this.tui.addChild(this.editor);
 
@@ -195,6 +204,10 @@ export class TuiLoop {
 
     // Ctrl+C to exit
     this.tui.addInputListener((data) => {
+      // Ignore key release events (Kitty keyboard protocol sends
+      // separate press/release events; matching both would double-fire)
+      if (isKeyRelease(data)) return undefined;
+
       if (matchesKey(data, Key.ctrl("c"))) {
         this.shutdown();
         return { consume: true };
@@ -206,19 +219,15 @@ export class TuiLoop {
         }
         return { consume: true };
       }
-      // Ctrl+H: show session history overlay
-      if (matchesKey(data, Key.ctrl("h"))) {
-        this.showSessionsOverlay();
-        return { consume: true };
-      }
+      // Ctrl+H: removed as per user request
       // Ctrl+N: new session
       if (matchesKey(data, Key.ctrl("n"))) {
         this.handleNewSession();
         return { consume: true };
       }
-      // Ctrl+P: switch model
+      // Ctrl+P: cycle to next model
       if (matchesKey(data, Key.ctrl("p"))) {
-        this.showModelSwitchOverlay();
+        this.cycleModel();
         return { consume: true };
       }
       return undefined;
@@ -235,6 +244,26 @@ export class TuiLoop {
     this.addMessage(
       new Text("Type /help for commands, or just ask a question.", 0, 0),
     );
+
+    // Startup info: tools, MCP servers, skills
+    const toolNames = this.tools.map((t) => t.name).join(", ");
+    const skillNames = this.skillManager
+      .getSkills()
+      .map((s) => s.name)
+      .join(", ");
+    this.addMessage(new Text(`Tools: ${toolNames}`, 0, 0));
+
+    this.addMessage(
+      new Text(`${skillNames ? `Skills: ${skillNames}` : ""}`, 0, 0),
+    );
+
+    if (this.mcpStatuses.length > 0) {
+      const mcpLine = this.mcpStatuses
+        .map((s) => `${s.ok ? ansi.green("✓") : ansi.red("✗")} ${s.name}`)
+        .join(", ");
+      this.addMessage(new Text(`MCP: ${mcpLine}`, 0, 0));
+    }
+
     this.tui.start();
   }
 
@@ -301,59 +330,103 @@ export class TuiLoop {
   // ==========================================================================
 
   private async handleSlashCommand(input: string): Promise<void> {
-    // Handle display-only commands directly (avoid stdout leak from route() println)
+    // Display-only commands
     if (input === "/help") {
-      this.addMessage(new Text(this.commandRouter.getHelpText(), 0, 0));
+      this.addMessage(new Text(this._getHelpText(), 0, 0));
       return;
     }
     if (input === "/tools") {
-      this.addMessage(new Text(this.commandRouter.getToolsText(), 0, 0));
-      return;
-    }
-    if (input === "/skills") {
-      this.addMessage(new Text(this.commandRouter.getSkillsText(), 0, 0));
+      this.addMessage(new Text(this._getToolsText(), 0, 0));
       return;
     }
     if (input === "/mcp") {
-      this.addMessage(new Text(this.commandRouter.getMcpStatusText(), 0, 0));
+      this.addMessage(new Text(this._getMcpStatusText(), 0, 0));
       return;
     }
     if (input === "/sessions") {
-      const sessionsText = await this.commandRouter.getSessionsText();
-      this.addMessage(new Text(sessionsText, 0, 0));
-      await this.showSessionsOverlay();
+      // Do nothing — user should select from autocomplete list
       return;
     }
+
+    // Session management
     if (input === "/new" || input === "/reset") {
+      this.coordinator.newSession();
       this.handleNewSession();
       return;
     }
 
-    // Delegate to CommandRouter for commands with complex logic:
-    // /continue, /skill:, /exit, and unknown slash commands
-    const result = await this.commandRouter.route(input);
-
-    switch (result.type) {
-      case "exit":
-        await this.shutdown();
-        break;
-      case "chat":
-        // Skill command returned chat input
-        await this.executeTurn(result.input);
-        break;
-      case "handled": {
-        if (input.startsWith("/continue ")) {
-          const sessionId = input.slice("/continue ".length).trim();
-          if (sessionId) {
-            this.clearMessages();
-            this.addMessage(
-              new Text(`[Switched to session ${sessionId.slice(0, 8)}]`, 0, 0),
-            );
-          }
-        }
-        break;
-      }
+    // Exit commands
+    if (input === "/exit" || input === "/quit" || input === "/q") {
+      this.addMessage(new Text("Goodbye!", 0, 0));
+      await this.shutdown();
+      return;
     }
+
+    // /skill:<name> [instructions] — read skill content and send to LLM
+    if (input.startsWith("/skill:")) {
+      const rest = input.slice("/skill:".length).trim();
+      if (!rest) {
+        this.addMessage(
+          new Text("Usage: /skill:<name> [additional instructions]", 0, 0),
+        );
+        return;
+      }
+
+      const spaceIdx = rest.indexOf(" ");
+      const skillName = spaceIdx === -1 ? rest : rest.slice(0, spaceIdx);
+      const additional = spaceIdx === -1 ? "" : rest.slice(spaceIdx + 1).trim();
+
+      const skill = this.skillManager.getSkill(skillName);
+      if (!skill) {
+        this.addMessage(
+          new Text(
+            `Skill not found: ${skillName}\nType /skill: to see available skills.`,
+            0,
+            0,
+          ),
+        );
+        return;
+      }
+
+      let content: string;
+      try {
+        content = await this.skillManager.readSkillContent(skillName);
+      } catch (err) {
+        this.addMessage(
+          new Text(
+            `Failed to read skill: ${err instanceof Error ? err.message : String(err)}`,
+            0,
+            0,
+          ),
+        );
+        return;
+      }
+
+      const skillDir = skill.location.replace(/[/\\]SKILL\.md$/, "");
+      const expanded = [
+        `<skill name="${skillName}" location="${skill.location}">`,
+        `References are relative to ${skillDir}.`,
+        "",
+        content,
+        "</skill>",
+      ];
+      if (additional) {
+        expanded.push("", additional);
+      }
+
+      this.addMessage(new Text(`[Activated skill: ${skillName}]`, 0, 0));
+      await this.executeTurn(expanded.join("\n"));
+      return;
+    }
+
+    // Unknown command
+    this.addMessage(
+      new Text(
+        `Unknown command: ${input}\nType /help to see available commands.`,
+        0,
+        0,
+      ),
+    );
   }
 
   // ==========================================================================
@@ -430,7 +503,7 @@ export class TuiLoop {
               }
               this.thinkingContent += delta.reasoning_content;
               this.thinkingText.setText(
-                `${ansi.dim(ansi.bold("Thinking"))}\n${ansi.dim(this.thinkingContent)}`,
+                `${ansi.white(ansi.bold("Thinking"))}\n${ansi.white(this.thinkingContent)}`,
               );
               this.tui.requestRender();
             }
@@ -441,6 +514,17 @@ export class TuiLoop {
               this.streamingText += delta.content;
               md.setText(this.streamingText);
               this.tui.requestRender();
+            }
+
+            // Handle usage — update info bar in real-time
+            if (event.chunk.usage) {
+              const u = event.chunk.usage;
+              this.turnUsage = {
+                prompt: u.prompt_tokens,
+                completion: u.completion_tokens,
+                total: u.total_tokens,
+              };
+              this._updateInfoBar();
             }
             break;
           }
@@ -468,6 +552,8 @@ export class TuiLoop {
           case "done": {
             this.streamingMd = null;
             this.thinkingText = null;
+            // Clear turn-level usage after turn completes
+            this.turnUsage = null;
             if (totalToolCalls > 0) {
               this.addMessage(
                 new Text(ansi.gray(`[${totalToolCalls} tool(s) used]`), 1, 0),
@@ -529,6 +615,55 @@ export class TuiLoop {
   }
 
   // ==========================================================================
+  // Command text generators
+  // ==========================================================================
+
+  /** Return the help text as a string. */
+  private _getHelpText(): string {
+    return [
+      "Available commands:",
+      "  /help       - Show this help message",
+      "  /new        - Start a new session",
+      "  /sessions   - List session history",
+      "  /tools      - List available tools",
+      "  /skill:<name> - Invoke a skill by name",
+      "  /mcp        - List MCP server status",
+      "  /reset      - Same as /new",
+      "  /q          - Exit the program",
+      "",
+      "Any other input will be sent to the AI agent.",
+    ].join("\n");
+  }
+
+  /** Return the tools list as a string. */
+  private _getToolsText(): string {
+    const lines = ["Available tools:"];
+    for (const tool of this.tools) {
+      lines.push(`  ${tool.name}: ${tool.description}`);
+    }
+    return lines.join("\n");
+  }
+
+  /** Return the MCP status as a string. */
+  private _getMcpStatusText(): string {
+    if (this.mcpStatuses.length === 0) {
+      return [
+        "No MCP servers configured.",
+        "Configure servers in ~/.babyAgent/mcp.json",
+      ].join("\n");
+    }
+    const lines = ["MCP servers:"];
+    for (const s of this.mcpStatuses) {
+      const status = s.ok ? "✓" : "✗";
+      const toolInfo = s.ok ? `${s.toolCount} tool(s)` : s.error;
+      lines.push(
+        `  ${status} ${s.name.padEnd(25)} [${s.transport}]  ${toolInfo}`,
+      );
+    }
+    return lines.join("\n");
+  }
+
+  // ==========================================================================
   // Status bar
   // ==========================================================================
 
@@ -538,7 +673,9 @@ export class TuiLoop {
     const sessionPart = sid
       ? `${ansi.bold(ansi.green(`[${sid.slice(0, 8)}]`))}`
       : ansi.gray("[No session]");
-    const hints = ansi.dim("Ctrl+H History | Ctrl+N New | Esc Cancel");
+    const hints = ansi.dim(
+      "Ctrl+H History | Ctrl+N New | Ctrl+P Model | Esc Cancel",
+    );
     return `${sessionPart}  ${hints}`;
   }
 
@@ -556,14 +693,21 @@ export class TuiLoop {
   private _buildInfoBarText(): string {
     const modelPart = `Model: ${this.currentModelId}`;
 
+    // Show turn-level usage during streaming, session-level after
+    if (this.turnUsage) {
+      const up = this._formatTokens(this.turnUsage.prompt);
+      const down = this._formatTokens(this.turnUsage.completion);
+      const total = this._formatTokens(this.turnUsage.total);
+      return `${modelPart} | Tokens: ${up}↑ ${down}↓ (${total} total) | Cost: ...`;
+    }
+
     const usage = this.coordinator.sessionUsage;
     let tokenPart: string;
     if (usage) {
-      const up = this._formatTokens(usage.promptTokens);
-      const down = this._formatTokens(usage.completionTokens);
-      const total = this._formatTokens(usage.totalTokens);
-      const cache = this._formatTokens(usage.cacheHitTokens);
-      tokenPart = `Tokens: ${up}↑ ${down}↓ ${total}∑ cache:${cache}`;
+      const up = this._formatTokens(usage.prompt_tokens);
+      const down = this._formatTokens(usage.completion_tokens);
+      const cache = this._formatTokens(usage.prompt_cache_hit_tokens ?? 0);
+      tokenPart = `Tokens: ${up}↑ ${down}↓ cache:${cache}`;
     } else {
       tokenPart = "Tokens: --";
     }
@@ -605,136 +749,78 @@ export class TuiLoop {
 
   /** Create a new session: clear coordinator state and chat area. */
   private handleNewSession(): void {
-    this.coordinator.newSession();
     this.clearMessages();
     this.updateStatusBar();
     this._updateInfoBar();
     this.tui.requestRender();
   }
 
-  // ==========================================================================
-  // Overlays
-  // ==========================================================================
+  /** Resume a session selected from autocomplete. */
+  private async handleSessionSelect(sessionId: string): Promise<void> {
+    try {
+      await this.coordinator.resumeSession(sessionId);
+      this.clearMessages();
 
-  private async showSessionsOverlay(): Promise<void> {
-    const sessions = await this.coordinator.listSessions();
-    if (sessions.length === 0) {
-      this.addMessage(new Text("No session history.", 0, 0));
-      return;
-    }
-
-    const currentId = this.coordinator.currentSessionId;
-    const items = sessions.map((s) => {
-      const marker = s.id === currentId ? "* " : "";
-      const date = new Date(s.createdAt).toLocaleString("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      const truncatedTitle =
-        s.title.length > 40 ? s.title.slice(0, 40) + "…" : s.title;
-      return {
-        value: s.id,
-        label: `${marker}${s.id.slice(0, 8)}  [${date}]  ${truncatedTitle}`,
-        description: `${s.turnCount} turns`,
-      };
-    });
-
-    const list = new SelectList(items, 15, selectListTheme);
-
-    list.onSelect = async (item) => {
-      try {
-        await this.coordinator.resumeSession(item.value);
-        this.clearMessages();
-
-        // Load and display the session's message history
-        const messages = this.coordinator.getSessionMessages();
-        if (messages.length > 0) {
-          for (const msg of messages) {
-            if (msg.role === "user") {
-              this.addMessage(
-                new Text(
-                  `${ansi.cyan("You")} ${ansi.dim(">")} ${msg.content}`,
-                  0,
-                  0,
-                  ansi.bgGray,
-                ),
-              );
-            } else if (msg.role === "assistant" && msg.content) {
-              this.addMessage(
-                new Markdown(
-                  msg.content,
-                  1,
-                  0,
-                  markdownTheme,
-                  assistantDefaultStyle,
-                ),
-              );
-              this.addMessage(new Spacer(1));
-            }
+      // Load and display the session's message history
+      const messages = this.coordinator.getSessionMessages();
+      if (messages.length > 0) {
+        for (const msg of messages) {
+          if (msg.role === "user") {
+            this.addMessage(
+              new Text(
+                `${ansi.cyan("You")} ${ansi.dim("> ")} ${msg.content}`,
+                0,
+                0,
+                ansi.bgGray,
+              ),
+            );
+          } else if (msg.role === "assistant" && msg.content) {
+            this.addMessage(
+              new Markdown(
+                msg.content,
+                1,
+                0,
+                markdownTheme,
+                assistantDefaultStyle,
+              ),
+            );
+            this.addMessage(new Spacer(1));
           }
         }
-
-        this.updateStatusBar();
-        this._updateInfoBar();
-        this.tui.requestRender();
-      } catch (err) {
-        this.addMessage(
-          new Text(
-            err instanceof Error ? err.message : "Session not found.",
-            0,
-            0,
-          ),
-        );
       }
-    };
 
-    this.tui.showOverlay(list, {
-      anchor: "center",
-      width: "90%",
-      maxHeight: "60%",
-    });
+      this.updateStatusBar();
+      this._updateInfoBar();
+      this.tui.requestRender();
+    } catch (err) {
+      this.addMessage(
+        new Text(
+          err instanceof Error ? err.message : "Session not found.",
+          0,
+          0,
+        ),
+      );
+    }
   }
 
   // ========================================================================
   // Model switching (Ctrl+P)
   // ========================================================================
 
-  /** Show a SelectList overlay for switching the active model. */
-  private showModelSwitchOverlay(): void {
-    if (this.models.length === 0) return;
+  /** Cycle to the next model in the list (wraps around). */
+  private cycleModel(): void {
+    this.coordinator.switchModel();
+    this.currentModelId = this.coordinator.currentModel;
 
-    const items = this.models.map((m) => ({
-      value: m.id,
-      label: `${m.id === this.currentModelId ? "* " : "  "}${m.name}`,
-      description: `${m.contextWindow.toLocaleString()} ctx | ${m.maxTokens.toLocaleString()} max`,
-    }));
-
-    const list = new SelectList(items, 10, selectListTheme);
-
-    list.onSelect = (item) => {
-      if (item.value === this.currentModelId) return;
-
-      this.currentModelId = item.value;
-      this.coordinator.setModel(item.value);
-
-      this.addMessage(
-        new Text(
-          `${ansi.cyan("Model")} ${ansi.dim("→")} ${ansi.bold(item.value)}`,
-          0,
-          0,
-          ansi.bgGray,
-        ),
-      );
-      this._updateInfoBar();
-      this.tui.requestRender();
-    };
-
-    this.tui.showOverlay(list, {
-      anchor: "center",
-      width: "60%",
-      maxHeight: "40%",
-    });
+    this.addMessage(
+      new Text(
+        `${ansi.cyan("Model")} ${ansi.dim("→")} ${ansi.bold(this.currentModelId)}`,
+        0,
+        0,
+        ansi.bgGray,
+      ),
+    );
+    this._updateInfoBar();
+    this.tui.requestRender();
   }
 }

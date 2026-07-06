@@ -1,0 +1,5 @@
+# Inline slash commands into TuiLoop, delete CommandRouter
+
+TuiLoop is the sole consumer of CommandRouter. The indirection adds a layer of abstraction with no second caller, no test isolation benefit, and forces the same slash command definitions to live in two places (autocomplete list + CommandRouter switch). Inlining eliminates the duplication, removes a file, and lets TuiLoop own all command handling — including the new `/skill:` autocomplete integration that requires direct access to the editor's autocomplete provider.
+
+CommandRouter is deleted. All command parsing, text generation, and result routing move into TuiLoop. The `/skill:` command changes from a fire-and-send pattern to an autocomplete-driven flow: `/skill:` triggers a skill picker, selection populates the editor, and the user adds instructions before sending. The `/skills` list command is removed (skill discovery is now autocomplete-only). Startup info (tools, MCP servers, skills) is printed in the chat area on launch.

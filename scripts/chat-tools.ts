@@ -17,7 +17,7 @@ import {
 } from "./_common.js";
 import type { Message, LLMResponse } from "../src/llm/index.js";
 
-const client = createClient();
+const client = await createClient();
 
 // ── 工具定义 ────────────────────────────────────────────
 

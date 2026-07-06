@@ -4,13 +4,14 @@
  * Sits between CLI (display) and Agent + SessionManager (logic + persistence).
  * Owns conversation state so display adapters (CLI, future TUI) don't need to.
  */
-import type { Message, TurnUsage, BillingInfo } from "./llm/index.js";
+import type { Message, TokenUsage, BillingInfo } from "./llm/index.js";
 import { Agent, type AgentStreamEvent, type AgentResult } from "./agent.js";
 import {
   SessionManager,
   type SessionMeta,
   type TurnRecord,
 } from "./session.js";
+import { getLogger } from "./logger.js";
 
 // ============================================================================
 // Types
@@ -45,9 +46,10 @@ export class ConversationCoordinator {
   private sessionManager: SessionManager;
   private _sessionId: string | null = null;
   /** Session-level accumulated token usage (sum of all completed Turns). */
-  private _sessionUsage: TurnUsage = _zeroUsage();
+  private _sessionUsage: TokenUsage = _zeroUsage();
   /** Session-level accumulated billing (sum of all completed Turns). */
   private _sessionBilling: BillingInfo = _zeroBilling();
+  private logger = getLogger();
 
   constructor(config: CoordinatorConfig) {
     this.agent = config.agent;
@@ -67,14 +69,9 @@ export class ConversationCoordinator {
     return this.agent.currentModel;
   }
 
-  /** Get the last known context size (prompt tokens from last LLM call). */
-  get contextSize(): number {
-    return this.agent.lastContextSize;
-  }
-
   /** Session-level accumulated token usage, or null if no turns completed. */
-  get sessionUsage(): TurnUsage | null {
-    return this._sessionUsage.totalTokens > 0 ? this._sessionUsage : null;
+  get sessionUsage(): TokenUsage | null {
+    return this._sessionUsage.total_tokens > 0 ? this._sessionUsage : null;
   }
 
   /** Session-level accumulated billing, or null if no turns completed. */
@@ -88,10 +85,18 @@ export class ConversationCoordinator {
 
   /** Discard current session and start fresh. */
   newSession(): void {
+    const previousSessionId = this._sessionId;
     this._sessionId = null;
     this._sessionUsage = _zeroUsage();
     this._sessionBilling = _zeroBilling();
     this.agent.setConversationMessages([]);
+
+    this.logger.info("coordinator", "new_session", {
+      previousSessionId,
+    });
+
+    // Clear logger session ID
+    this.logger.setSessionId(null);
   }
 
   /** List all persisted sessions, most recent first. */
@@ -109,35 +114,17 @@ export class ConversationCoordinator {
     return [...all];
   }
 
-  /** Switch the LLM model at runtime (pass-through to agent). */
-  setModel(modelId: string): void {
-    this.agent.setModel(modelId);
+  /** Rotate to the next model (pass-through to agent). */
+  switchModel(): void {
+    this.agent.switchModel();
   }
 
   /** Resume a persisted session, restoring its full message history.
    *  Supports both full session IDs and short 8-char prefixes (from /sessions). */
-  async resumeSession(sessionId: string): Promise<SessionMeta> {
+  async resumeSession(sessionId: string): Promise<SessionMeta | null> {
     let resolvedId = sessionId;
 
-    // 1. Try exact match first.
     let meta = await this.sessionManager.getSessionMeta(sessionId);
-
-    // 2. If not found, try prefix matching (supports short IDs from /sessions).
-    if (!meta) {
-      const allSessions = await this.sessionManager.listSessions();
-      const matches = allSessions.filter((s) => s.id.startsWith(sessionId));
-      if (matches.length === 0) {
-        throw new Error(`Session "${sessionId.slice(0, 8)}" not found.`);
-      }
-      if (matches.length > 1) {
-        const ids = matches.map((s) => s.id.slice(0, 20)).join(", ");
-        throw new Error(
-          `Ambiguous prefix "${sessionId}": matches ${matches.length} sessions (${ids}...). Use a longer prefix or full ID.`,
-        );
-      }
-      resolvedId = matches[0].id;
-      meta = matches[0];
-    }
 
     const loaded = await this.sessionManager.loadMessages(resolvedId);
     this._sessionId = resolvedId;
@@ -146,12 +133,16 @@ export class ConversationCoordinator {
       ...loaded,
     ]);
 
+    // Update logger session ID
+    this.logger.setSessionId(resolvedId);
+
     // Accumulate historical turn usage & billing for the info bar
     this._sessionUsage = _zeroUsage();
     this._sessionBilling = _zeroBilling();
     const records = await this.sessionManager.loadTurnRecords(resolvedId);
+
     for (const rec of records) {
-      this._accumulateTurn(rec.turnUsage, rec.billing);
+      this._accumulateTurn(rec.usage, rec.billing);
     }
 
     return meta;
@@ -176,6 +167,15 @@ export class ConversationCoordinator {
       this.agent.setConversationMessages([
         { role: "system", content: this.agent.systemPromptText },
       ]);
+
+      this.logger.info("coordinator", "session_created", {
+        sessionId: meta.id,
+        title: meta.title,
+      });
+
+      // Update logger session ID
+      this.logger.setSessionId(meta.id);
+
       yield {
         type: "session_created",
         sessionId: meta.id,
@@ -197,18 +197,18 @@ export class ConversationCoordinator {
         // Check abort signal every event to allow early termination
         if (options?.signal?.aborted) {
           yield { type: "aborted" };
-          // Persist partial turn before returning
-          yield* this.persistPartialTurn(
-            userInput,
-            messagesBefore,
-            turnInput,
-            "Turn aborted by user.",
-          );
           return;
         }
         if (event.type === "done") {
           result = event.result;
         }
+
+        if (event.type === "chunk") {
+          // Accumulate session stats BEFORE yielding so display adapters
+          // (TUI info bar, etc.) see the updated values immediately.
+          this._accumulateTurn(event.chunk.usage, event.chunk.billing);
+        }
+
         yield event;
       }
     } catch (agentErr) {
@@ -216,6 +216,16 @@ export class ConversationCoordinator {
       // error turn to prevent orphaned meta files (meta.json without .jsonl).
       const errorMsg =
         agentErr instanceof Error ? agentErr.message : String(agentErr);
+
+      this.logger.error(
+        "coordinator",
+        "agent_error",
+        {
+          sessionId: this._sessionId,
+          error: errorMsg,
+        },
+        agentErr instanceof Error ? agentErr : new Error(String(agentErr)),
+      );
 
       if (this._sessionId) {
         const errorTurn: TurnRecord = {
@@ -232,7 +242,14 @@ export class ConversationCoordinator {
         };
         try {
           await this.sessionManager.appendTurn(this._sessionId, errorTurn);
+          this.logger.info("coordinator", "error_turn_saved", {
+            sessionId: this._sessionId,
+          });
         } catch (saveErr) {
+          this.logger.error("coordinator", "save_error", {
+            sessionId: this._sessionId,
+            error: saveErr instanceof Error ? saveErr.message : String(saveErr),
+          });
           yield {
             type: "save_error",
             error: saveErr instanceof Error ? saveErr.message : String(saveErr),
@@ -250,14 +267,6 @@ export class ConversationCoordinator {
       return;
     }
 
-    // Agent updates its internal state automatically in runWithMessages.
-    // No need to manually sync — conversationMessages is already up to date.
-
-    // Accumulate session-level usage & billing from this turn
-    if (result) {
-      this._accumulateTurn(result.usage, result.billing);
-    }
-
     // Persist the turn with usage & billing
     if (this._sessionId && result) {
       const turnMessages = result.allMessages.slice(messagesBefore);
@@ -267,12 +276,16 @@ export class ConversationCoordinator {
           timestamp: new Date().toISOString(),
           userInput,
           messages: turnMessages,
-          turnUsage: result.usage,
-          billing: result.billing,
+          usage: this._sessionUsage,
+          billing: this._sessionBilling,
         };
         try {
           await this.sessionManager.appendTurn(this._sessionId, turnRecord);
         } catch (err) {
+          this.logger.error("coordinator", "turn_save_error", {
+            sessionId: this._sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
           yield {
             type: "save_error",
             error: err instanceof Error ? err.message : String(err),
@@ -283,62 +296,33 @@ export class ConversationCoordinator {
   }
 
   // ==========================================================================
-  // Private: partial turn persistence (used on abort)
-  // ==========================================================================
-
-  /** Persist a partial turn when execution is aborted mid-stream. */
-  private async *persistPartialTurn(
-    userInput: string,
-    messagesBefore: number,
-    turnInput: Message[],
-    note: string,
-  ): AsyncGenerator<{ type: "save_error"; error: string }, void> {
-    if (!this._sessionId) return;
-
-    // Restore conversation state to before the failed turn
-    this.agent.setConversationMessages(
-      this.agent.conversationMessages.slice(0, messagesBefore),
-    );
-
-    const partialTurn: TurnRecord = {
-      type: "turn",
-      timestamp: new Date().toISOString(),
-      userInput,
-      messages: [
-        ...turnInput.slice(messagesBefore),
-        {
-          role: "assistant",
-          content: `[${note}]`,
-        } as Message,
-      ],
-    };
-    try {
-      await this.sessionManager.appendTurn(this._sessionId, partialTurn);
-    } catch (err) {
-      yield {
-        type: "save_error",
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
-  // ==========================================================================
   // Private: session stats accumulation
   // ==========================================================================
 
   /** Accumulate a Turn's usage & billing into the session totals. */
   private _accumulateTurn(
-    usage: TurnUsage | undefined,
+    usage: TokenUsage | undefined,
     billing: BillingInfo | undefined,
   ): void {
     if (usage) {
-      this._sessionUsage.promptTokens += usage.promptTokens;
-      this._sessionUsage.completionTokens += usage.completionTokens;
-      this._sessionUsage.totalTokens += usage.totalTokens;
-      this._sessionUsage.cacheHitTokens += usage.cacheHitTokens;
-      this._sessionUsage.cacheMissTokens += usage.cacheMissTokens;
-      this._sessionUsage.reasoningTokens += usage.reasoningTokens;
+      this._sessionUsage.prompt_tokens += usage.prompt_tokens;
+      this._sessionUsage.completion_tokens += usage.completion_tokens;
+      this._sessionUsage.total_tokens += usage.total_tokens;
+      this._sessionUsage.prompt_cache_hit_tokens =
+        (this._sessionUsage.prompt_cache_hit_tokens ?? 0) +
+        (usage.prompt_cache_hit_tokens ?? 0);
+      this._sessionUsage.prompt_cache_miss_tokens =
+        (this._sessionUsage.prompt_cache_miss_tokens ?? 0) +
+        (usage.prompt_cache_miss_tokens ?? 0);
+      const existingReasoning =
+        this._sessionUsage.completion_tokens_details?.reasoning_tokens ?? 0;
+      const addedReasoning =
+        usage.completion_tokens_details?.reasoning_tokens ?? 0;
+      this._sessionUsage.completion_tokens_details = {
+        reasoning_tokens: existingReasoning + addedReasoning,
+      };
     }
+
     if (billing) {
       this._sessionBilling.inputCost += billing.inputCost;
       this._sessionBilling.outputCost += billing.outputCost;
@@ -353,14 +337,14 @@ export class ConversationCoordinator {
 // Module-level helpers
 // ============================================================================
 
-function _zeroUsage(): TurnUsage {
+function _zeroUsage(): TokenUsage {
   return {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    cacheHitTokens: 0,
-    cacheMissTokens: 0,
-    reasoningTokens: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    prompt_cache_hit_tokens: 0,
+    prompt_cache_miss_tokens: 0,
+    completion_tokens_details: { reasoning_tokens: 0 },
   };
 }
 

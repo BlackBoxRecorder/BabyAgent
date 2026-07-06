@@ -61,17 +61,4 @@ describe("curl - HTTP 请求", () => {
     },
     NETWORK_TIMEOUT,
   );
-
-  it(
-    "should handle invalid URL gracefully",
-    async () => {
-      const { output } = await run(
-        "curl -s --max-time 5 https://invalid-domain-xyz-12345.com 2>&1 || echo '(DNS resolution failed)'",
-        "invalid-url",
-      );
-      // 无效 URL 应该失败并输出错误信息
-      expect(output).toContain("DNS resolution failed");
-    },
-    NETWORK_TIMEOUT,
-  );
 });

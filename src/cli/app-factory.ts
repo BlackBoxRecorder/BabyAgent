@@ -7,19 +7,18 @@
 import { Agent } from "../agent.js";
 import { SessionManager } from "../session.js";
 import { ConversationCoordinator } from "../coordinator.js";
-import { DeepSeekClient } from "../llm/index.js";
+import { ChatClient } from "../llm/index.js";
 import {
   loadModelConfig,
-  getDeepSeekProvider,
-  type ModelInfo,
-} from "../llm/models-config.js";
+  getAllModels,
+  type ModelEntry,
+} from "../llm/models.js";
 import { createBashToolAsTool } from "../tools/bash/index.js";
 import { createAllFsTools } from "../tools/fs/index.js";
 import { McpManager, type ServerStatus } from "../mcp/index.js";
 import type { Tool } from "../tools/interface/index.js";
 import { SkillManager } from "../skills.js";
-import { CommandRouter } from "./command-router.js";
-import { DisplayRenderer } from "./display-renderer.js";
+import { loadSystemPrompt, getSystemPromptPath } from "../llm/prompt.js";
 
 // ============================================================================
 // Types
@@ -27,14 +26,12 @@ import { DisplayRenderer } from "./display-renderer.js";
 
 export interface AppComponents {
   coordinator: ConversationCoordinator;
-  commandRouter: CommandRouter;
-  display: DisplayRenderer;
   mcpManager: McpManager;
   skillManager: SkillManager;
+  tools: readonly Tool[];
+  mcpStatuses: readonly ServerStatus[];
   /** List of available models from the config, for UI switching. */
-  models: ModelInfo[];
-  /** The default model ID to display as active on startup. */
-  defaultModelId: string;
+  models: ModelEntry[];
 }
 
 // ============================================================================
@@ -53,15 +50,8 @@ export async function createApp(): Promise<AppComponents> {
   // Model config — single source of truth for LLM connectivity
   // ------------------------------------------------------------------
   const modelConfig = await loadModelConfig();
-  const deepseekProvider = getDeepSeekProvider(modelConfig);
+  const allModels = getAllModels(modelConfig);
   const cwd = process.cwd();
-
-  const display = new DisplayRenderer();
-
-  display.println(
-    `Provider: deepseek | ${deepseekProvider.models.length} model(s) | ` +
-      `default: ${deepseekProvider.defaultModel}`,
-  );
 
   // ------------------------------------------------------------------
   // Tools
@@ -77,7 +67,7 @@ export async function createApp(): Promise<AppComponents> {
   try {
     mcpTools = await mcpManager.loadAllTools();
   } catch (err) {
-    display.println(
+    console.log(
       `[MCP] Failed to load MCP config: ${
         err instanceof Error ? err.message : String(err)
       }`,
@@ -89,45 +79,32 @@ export async function createApp(): Promise<AppComponents> {
   // Warn about failed servers
   for (const s of mcpStatuses) {
     if (!s.ok) {
-      display.println(`[MCP] ${s.name}: ${s.error}`);
+      console.log(`[MCP] ${s.name}: ${s.error}`);
     }
   }
 
   // Build the full tool list
   const allTools: Tool[] = [bashTool, ...fsTools, ...mcpTools];
 
-  // Startup summary
-  const builtinCount = 1 + fsTools.length;
-  const okServers = mcpStatuses.filter((s) => s.ok).length;
-  if (okServers > 0 || mcpTools.length > 0) {
-    display.println(
-      `Loaded ${builtinCount} built-in tools + ${mcpTools.length} MCP tool(s) ` +
-        `from ${okServers} server(s)`,
-    );
-  }
-
   // ------------------------------------------------------------------
   // Skills
   // ------------------------------------------------------------------
   const skillManager = new SkillManager();
   await skillManager.loadSkills();
-  const skillCount = skillManager.getSkills().length;
-  const visibleSkills = skillManager
-    .getSkills()
-    .filter((s) => !s.disableModelInvocation);
-  if (skillCount > 0) {
-    display.println(
-      `Loaded ${skillCount} skill(s) (${visibleSkills.length} auto, ${skillCount - visibleSkills.length} manual)`,
-    );
-  }
 
   // ------------------------------------------------------------------
   // System prompt
   // ------------------------------------------------------------------
-  let systemPrompt =
-    "You are a helpful terminal AI agent. You have access to bash commands " +
-    "and filesystem tools. When performing tasks, use tools to gather " +
-    "information before responding. Be concise and direct.";
+  let systemPrompt: string;
+  try {
+    systemPrompt = await loadSystemPrompt();
+    console.log(`System prompt loaded from ${getSystemPromptPath()}`);
+  } catch (err) {
+    console.error(
+      `[System Prompt] ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw err; // Fail fast like models.json
+  }
   const skillsPrompt = skillManager.formatSkillsForSystemPrompt();
   if (skillsPrompt) {
     systemPrompt += "\n\n" + skillsPrompt;
@@ -137,15 +114,9 @@ export async function createApp(): Promise<AppComponents> {
   // Agent + Coordinator
   // ------------------------------------------------------------------
   const agent = new Agent({
-    llm: new DeepSeekClient({
-      apiKey: deepseekProvider.apiKey,
-      baseUrl: deepseekProvider.baseUrl,
-      defaults: { model: deepseekProvider.defaultModel },
-    }),
+    llm: new ChatClient(allModels),
     tools: allTools,
     systemPrompt,
-    models: deepseekProvider.models,
-    defaultModel: deepseekProvider.defaultModel,
   });
 
   const coordinator = new ConversationCoordinator({
@@ -154,23 +125,14 @@ export async function createApp(): Promise<AppComponents> {
   });
 
   // ------------------------------------------------------------------
-  // Command router
+  // Return all components
   // ------------------------------------------------------------------
-  const commandRouter = new CommandRouter(
-    coordinator,
-    allTools,
-    mcpStatuses,
-    skillManager,
-    display,
-  );
-
   return {
     coordinator,
-    commandRouter,
-    display,
     mcpManager,
     skillManager,
-    models: deepseekProvider.models,
-    defaultModelId: deepseekProvider.defaultModel!,
+    tools: allTools,
+    mcpStatuses,
+    models: allModels,
   };
 }
