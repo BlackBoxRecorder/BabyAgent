@@ -5,12 +5,13 @@
  * Owns conversation state so display adapters (CLI, future TUI) don't need to.
  */
 import type { Message, TokenUsage, BillingInfo } from "./llm/index.js";
-import { Agent, type AgentStreamEvent, type AgentResult } from "./agent.js";
+import type { AgentSession, AgentStreamEvent, AgentResult } from "./agent.js";
 import {
   SessionManager,
   type SessionMeta,
   type TurnRecord,
 } from "./session.js";
+import type { Logger } from "./logger.js";
 import { getLogger } from "./logger.js";
 
 // ============================================================================
@@ -27,8 +28,11 @@ export type TurnEvent =
 
 /** Configuration for ConversationCoordinator. */
 export interface CoordinatorConfig {
-  agent: Agent;
+  /** Agent session interface for conversation state and execution. */
+  agent: AgentSession;
   sessionManager: SessionManager;
+  /** Logger instance (optional, defaults to global logger) */
+  logger?: Logger;
 }
 
 /** Options for executeTurn. */
@@ -42,18 +46,19 @@ export interface ExecuteTurnOptions {
 // ============================================================================
 
 export class ConversationCoordinator {
-  private agent: Agent;
+  private agent: AgentSession;
   private sessionManager: SessionManager;
   private _sessionId: string | null = null;
   /** Session-level accumulated token usage (sum of all completed Turns). */
   private _sessionUsage: TokenUsage = _zeroUsage();
   /** Session-level accumulated billing (sum of all completed Turns). */
   private _sessionBilling: BillingInfo = _zeroBilling();
-  private logger = getLogger();
+  private logger: Logger;
 
   constructor(config: CoordinatorConfig) {
     this.agent = config.agent;
     this.sessionManager = config.sessionManager;
+    this.logger = config.logger ?? getLogger();
   }
 
   // ==========================================================================
@@ -66,7 +71,7 @@ export class ConversationCoordinator {
 
   /** Get the currently active model ID. */
   get currentModel(): string {
-    return this.agent.currentModel;
+    return this.agent.getCurrentModel();
   }
 
   /** Session-level accumulated token usage, or null if no turns completed. */
@@ -89,7 +94,7 @@ export class ConversationCoordinator {
     this._sessionId = null;
     this._sessionUsage = _zeroUsage();
     this._sessionBilling = _zeroBilling();
-    this.agent.setConversationMessages([]);
+    this.agent.setMessages([]);
 
     this.logger.info("coordinator", "new_session", {
       previousSessionId,
@@ -106,7 +111,7 @@ export class ConversationCoordinator {
 
   /** Get current session messages (excluding system prompt) for display. */
   getSessionMessages(): Message[] {
-    const all = this.agent.conversationMessages as Message[];
+    const all = this.agent.getMessages() as Message[];
     // Skip the first message if it's the system prompt
     if (all.length > 0 && all[0].role === "system") {
       return all.slice(1);
@@ -128,8 +133,8 @@ export class ConversationCoordinator {
 
     const loaded = await this.sessionManager.loadMessages(resolvedId);
     this._sessionId = resolvedId;
-    this.agent.setConversationMessages([
-      { role: "system", content: this.agent.systemPromptText },
+    this.agent.setMessages([
+      { role: "system", content: this.agent.getSystemPrompt() },
       ...loaded,
     ]);
 
@@ -164,8 +169,8 @@ export class ConversationCoordinator {
     if (this._sessionId === null) {
       const meta = await this.sessionManager.createSession(userInput);
       this._sessionId = meta.id;
-      this.agent.setConversationMessages([
-        { role: "system", content: this.agent.systemPromptText },
+      this.agent.setMessages([
+        { role: "system", content: this.agent.getSystemPrompt() },
       ]);
 
       this.logger.info("coordinator", "session_created", {
@@ -184,9 +189,9 @@ export class ConversationCoordinator {
     }
 
     // Build turn input from agent's current conversation state.
-    const messagesBefore = this.agent.conversationMessages.length;
+    const messagesBefore = this.agent.getMessages().length;
     const turnInput: Message[] = [
-      ...this.agent.conversationMessages,
+      ...this.agent.getMessages(),
       { role: "user", content: userInput },
     ];
 
@@ -259,9 +264,7 @@ export class ConversationCoordinator {
 
       // Restore message history to before the failed turn so the next
       // turn starts from a clean state.
-      this.agent.setConversationMessages(
-        this.agent.conversationMessages.slice(0, messagesBefore),
-      );
+      this.agent.setMessages(this.agent.getMessages().slice(0, messagesBefore));
 
       yield { type: "agent_error", error: errorMsg };
       return;

@@ -5,3 +5,5 @@
 export * from "./types.js";
 export { ChatClient } from "./llm.js";
 export type { ModelEntry } from "./models.js";
+export type { BillingCalculator } from "./billing.js";
+export { DefaultBillingCalculator } from "./billing.js";

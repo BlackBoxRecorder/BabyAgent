@@ -15,8 +15,15 @@ import { TuiLoop } from "./cli/tui-loop.js";
 // Main
 // ============================================================================
 
-const { coordinator, mcpManager, skillManager, tools, mcpStatuses, models } =
-  await createApp();
+const {
+  coordinator,
+  mcpManager,
+  skillManager,
+  tools,
+  mcpStatuses,
+  models,
+  commandHandler,
+} = await createApp();
 
 const loop = new TuiLoop(
   coordinator,
@@ -24,5 +31,6 @@ const loop = new TuiLoop(
   tools,
   mcpStatuses,
   mcpManager,
+  commandHandler,
 );
 loop.start();

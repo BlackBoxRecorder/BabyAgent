@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { Agent } from "../../src/agent.js";
 import { SessionManager } from "../../src/session.js";
 import { ConversationCoordinator } from "../../src/coordinator.js";
+import { SpyLogger } from "./logger-spy.js";
 import type {
   LLMClient,
   LLMStreamChunk,
@@ -39,7 +40,7 @@ function createMockLLMWithToolCall(
       yield {
         delta: {},
         finish_reason: "tool_calls",
-        accumulated: {
+        fullResponse: {
           content: null,
           tool_calls: [
             {
@@ -59,7 +60,7 @@ function createMockLLMWithToolCall(
       yield {
         delta: {},
         finish_reason: "stop",
-        accumulated: {
+        fullResponse: {
           content: "Done after tool call.",
           tool_calls: undefined,
           finish_reason: "stop",
@@ -138,6 +139,7 @@ async function assertNoOrphanedMeta(
 describe("ConversationCoordinator", () => {
   let tmpDir: string;
   let sessionManager: SessionManager;
+  let logger: SpyLogger;
 
   beforeEach(async () => {
     tmpDir = path.join(
@@ -145,6 +147,7 @@ describe("ConversationCoordinator", () => {
       `babyAgent-coord-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     sessionManager = new SessionManager(tmpDir);
+    logger = new SpyLogger();
   });
 
   afterEach(async () => {
@@ -178,11 +181,14 @@ describe("ConversationCoordinator", () => {
     const agent = new Agent({
       llm: mockLLM,
       tools: [throwingTool],
+      systemPrompt: "test",
+      logger,
     });
 
     const coordinator = new ConversationCoordinator({
       agent,
       sessionManager,
+      logger,
     });
 
     const events = await consumeTurn(coordinator, "Hello, crash me!");
@@ -213,11 +219,14 @@ describe("ConversationCoordinator", () => {
     const agent = new Agent({
       llm: mockLLM,
       tools: [],
+      systemPrompt: "test",
+      logger,
     });
 
     const coordinator = new ConversationCoordinator({
       agent,
       sessionManager,
+      logger,
     });
 
     const events = await consumeTurn(coordinator, "Hello!");
@@ -226,6 +235,9 @@ describe("ConversationCoordinator", () => {
     const agentErrorEvent = events.find((e: any) => e.type === "agent_error");
     expect(agentErrorEvent).toBeDefined();
     expect(agentErrorEvent.error).toContain("LLM API error");
+
+    // Verify logger was called
+    expect(logger.hasEvent("agent_error")).toBe(true);
 
     // No orphaned meta — error turn was saved
     await assertNoOrphanedMeta(tmpDir, sessionManager);
@@ -261,7 +273,7 @@ describe("ConversationCoordinator", () => {
               reasoning_tokens: 10,
             },
           },
-          accumulated: {
+          fullResponse: {
             content: "Hello!",
             tool_calls: undefined,
             finish_reason: "stop",
@@ -272,10 +284,16 @@ describe("ConversationCoordinator", () => {
       currentModelId: "mock-model",
     };
 
-    const agent = new Agent({ llm: mockLLM, tools: [] });
+    const agent = new Agent({
+      llm: mockLLM,
+      tools: [],
+      systemPrompt: "test",
+      logger,
+    });
     const coordinator = new ConversationCoordinator({
       agent,
       sessionManager,
+      logger,
     });
 
     // Execute a turn
@@ -305,7 +323,7 @@ describe("ConversationCoordinator", () => {
         yield {
           delta: { content: "Hello!" },
           finish_reason: "stop",
-          accumulated: {
+          fullResponse: {
             content: "Hello!",
             tool_calls: undefined,
             finish_reason: "stop",
@@ -317,10 +335,16 @@ describe("ConversationCoordinator", () => {
       currentModelId: "mock-model",
     };
 
-    const agent = new Agent({ llm: mockLLM, tools: [] });
+    const agent = new Agent({
+      llm: mockLLM,
+      tools: [],
+      systemPrompt: "test",
+      logger,
+    });
     const coordinator = new ConversationCoordinator({
       agent,
       sessionManager,
+      logger,
     });
 
     // Execute a turn
@@ -358,11 +382,14 @@ describe("ConversationCoordinator", () => {
     const agent = new Agent({
       llm: mockLLM,
       tools: [normalTool],
+      systemPrompt: "test",
+      logger,
     });
 
     const coordinator = new ConversationCoordinator({
       agent,
       sessionManager,
+      logger,
     });
 
     const events = await consumeTurn(coordinator, "Hello, use tool!");

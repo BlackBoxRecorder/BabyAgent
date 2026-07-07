@@ -28,7 +28,11 @@ import type { SkillManager } from "../skills.js";
 import { SessionAutocompleteProvider } from "./session-autocomplete.js";
 import { SkillAutocompleteProvider } from "./skill-autocomplete.js";
 import type { ExecuteTurnOptions } from "../coordinator.js";
-import type { ModelEntry } from "../llm/models.js";
+import type {
+  CommandHandler,
+  CommandContext,
+  CommandResult,
+} from "./command.js";
 
 // ============================================================================
 // ANSI Style Helpers (no external dependency needed)
@@ -102,6 +106,8 @@ export class TuiLoop {
   private tools: readonly Tool[];
   private mcpStatuses: readonly ServerStatus[];
   private mcpManager: McpManager;
+  private commandHandler: CommandHandler;
+  private commandContext: CommandContext;
   private tui: TUI;
   private editor: Editor;
   private messagesContainer: Container;
@@ -137,12 +143,21 @@ export class TuiLoop {
     tools: readonly Tool[],
     mcpStatuses: readonly ServerStatus[],
     mcpManager: McpManager,
+    commandHandler: CommandHandler,
   ) {
     this.coordinator = coordinator;
     this.skillManager = skillManager;
     this.tools = tools;
     this.mcpStatuses = mcpStatuses;
     this.mcpManager = mcpManager;
+    this.commandHandler = commandHandler;
+    this.commandContext = {
+      coordinator,
+      skillManager,
+      tools,
+      mcpStatuses,
+      mcpManager,
+    };
     this.currentModelId = this.coordinator.currentModel ?? "";
 
     // Create terminal and TUI
@@ -308,7 +323,11 @@ export class TuiLoop {
 
     try {
       if (input.startsWith("/")) {
-        await this.handleSlashCommand(input);
+        const result = await this.commandHandler.handle(
+          input,
+          this.commandContext,
+        );
+        await this._handleCommandResult(result);
       } else {
         await this.handleChatTurn(input);
       }
@@ -326,107 +345,38 @@ export class TuiLoop {
   }
 
   // ==========================================================================
-  // Slash command handling
+  // Command result handling
   // ==========================================================================
 
-  private async handleSlashCommand(input: string): Promise<void> {
-    // Display-only commands
-    if (input === "/help") {
-      this.addMessage(new Text(this._getHelpText(), 0, 0));
-      return;
-    }
-    if (input === "/tools") {
-      this.addMessage(new Text(this._getToolsText(), 0, 0));
-      return;
-    }
-    if (input === "/mcp") {
-      this.addMessage(new Text(this._getMcpStatusText(), 0, 0));
-      return;
-    }
-    if (input === "/sessions") {
-      // Do nothing — user should select from autocomplete list
-      return;
-    }
-
-    // Session management
-    if (input === "/new" || input === "/reset") {
-      this.coordinator.newSession();
-      this.handleNewSession();
-      return;
-    }
-
-    // Exit commands
-    if (input === "/exit" || input === "/quit" || input === "/q") {
-      this.addMessage(new Text("Goodbye!", 0, 0));
-      await this.shutdown();
-      return;
-    }
-
-    // /skill:<name> [instructions] — read skill content and send to LLM
-    if (input.startsWith("/skill:")) {
-      const rest = input.slice("/skill:".length).trim();
-      if (!rest) {
-        this.addMessage(
-          new Text("Usage: /skill:<name> [additional instructions]", 0, 0),
-        );
-        return;
-      }
-
-      const spaceIdx = rest.indexOf(" ");
-      const skillName = spaceIdx === -1 ? rest : rest.slice(0, spaceIdx);
-      const additional = spaceIdx === -1 ? "" : rest.slice(spaceIdx + 1).trim();
-
-      const skill = this.skillManager.getSkill(skillName);
-      if (!skill) {
+  private async _handleCommandResult(result: CommandResult): Promise<void> {
+    switch (result.type) {
+      case "display":
+        this.addMessage(new Text(result.text, 0, 0));
+        // If this was a /new or /reset command, also reset the UI
+        if (result.text === "Started new session.") {
+          this.handleNewSession();
+        }
+        break;
+      case "action":
+        await result.action();
+        break;
+      case "turn":
+        this.addMessage(new Text("[Activated skill]", 0, 0));
+        await this.executeTurn(result.input);
+        break;
+      case "noop":
+        // Do nothing
+        break;
+      case "unknown":
         this.addMessage(
           new Text(
-            `Skill not found: ${skillName}\nType /skill: to see available skills.`,
+            "Unknown command. Type /help to see available commands.",
             0,
             0,
           ),
         );
-        return;
-      }
-
-      let content: string;
-      try {
-        content = await this.skillManager.readSkillContent(skillName);
-      } catch (err) {
-        this.addMessage(
-          new Text(
-            `Failed to read skill: ${err instanceof Error ? err.message : String(err)}`,
-            0,
-            0,
-          ),
-        );
-        return;
-      }
-
-      const skillDir = skill.location.replace(/[/\\]SKILL\.md$/, "");
-      const expanded = [
-        `<skill name="${skillName}" location="${skill.location}">`,
-        `References are relative to ${skillDir}.`,
-        "",
-        content,
-        "</skill>",
-      ];
-      if (additional) {
-        expanded.push("", additional);
-      }
-
-      this.addMessage(new Text(`[Activated skill: ${skillName}]`, 0, 0));
-      await this.executeTurn(expanded.join("\n"));
-      return;
+        break;
     }
-
-    // Unknown command
-    this.addMessage(
-      new Text(
-        `Unknown command: ${input}\nType /help to see available commands.`,
-        0,
-        0,
-      ),
-    );
   }
 
   // ==========================================================================
@@ -615,55 +565,6 @@ export class TuiLoop {
   }
 
   // ==========================================================================
-  // Command text generators
-  // ==========================================================================
-
-  /** Return the help text as a string. */
-  private _getHelpText(): string {
-    return [
-      "Available commands:",
-      "  /help       - Show this help message",
-      "  /new        - Start a new session",
-      "  /sessions   - List session history",
-      "  /tools      - List available tools",
-      "  /skill:<name> - Invoke a skill by name",
-      "  /mcp        - List MCP server status",
-      "  /reset      - Same as /new",
-      "  /q          - Exit the program",
-      "",
-      "Any other input will be sent to the AI agent.",
-    ].join("\n");
-  }
-
-  /** Return the tools list as a string. */
-  private _getToolsText(): string {
-    const lines = ["Available tools:"];
-    for (const tool of this.tools) {
-      lines.push(`  ${tool.name}: ${tool.description}`);
-    }
-    return lines.join("\n");
-  }
-
-  /** Return the MCP status as a string. */
-  private _getMcpStatusText(): string {
-    if (this.mcpStatuses.length === 0) {
-      return [
-        "No MCP servers configured.",
-        "Configure servers in ~/.babyAgent/mcp.json",
-      ].join("\n");
-    }
-    const lines = ["MCP servers:"];
-    for (const s of this.mcpStatuses) {
-      const status = s.ok ? "✓" : "✗";
-      const toolInfo = s.ok ? `${s.toolCount} tool(s)` : s.error;
-      lines.push(
-        `  ${status} ${s.name.padEnd(25)} [${s.transport}]  ${toolInfo}`,
-      );
-    }
-    return lines.join("\n");
-  }
-
-  // ==========================================================================
   // Status bar
   // ==========================================================================
 
@@ -749,6 +650,7 @@ export class TuiLoop {
 
   /** Create a new session: clear coordinator state and chat area. */
   private handleNewSession(): void {
+    this.coordinator.newSession();
     this.clearMessages();
     this.updateStatusBar();
     this._updateInfoBar();

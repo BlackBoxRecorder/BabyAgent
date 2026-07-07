@@ -21,15 +21,34 @@ export enum LogLevel {
 }
 
 // ============================================================================
-// Logger Wrapper
+// Logger Interface
+// ============================================================================
+
+/** Logger interface for dependency injection. */
+export interface Logger {
+  error(
+    component: string,
+    event: string,
+    data?: Record<string, unknown>,
+    error?: Error,
+  ): void;
+  warn(component: string, event: string, data?: Record<string, unknown>): void;
+  info(component: string, event: string, data?: Record<string, unknown>): void;
+  debug(component: string, event: string, data?: Record<string, unknown>): void;
+  setSessionId(sessionId: string | null): void;
+  close(): Promise<void>;
+}
+
+// ============================================================================
+// Pino Logger Implementation
 // ============================================================================
 
 /**
  * Thin wrapper around pino that preserves the existing
  * `(component, event, data?, error?)` call signature.
  */
-export class Logger {
-  private static instance: Logger | null = null;
+export class PinoLogger implements Logger {
+  private static instance: PinoLogger | null = null;
 
   private pino: pino.Logger;
   private _sessionId: string | null = null;
@@ -55,11 +74,11 @@ export class Logger {
     );
   }
 
-  static getInstance(): Logger {
-    if (!Logger.instance) {
-      Logger.instance = new Logger();
+  static getInstance(): PinoLogger {
+    if (!PinoLogger.instance) {
+      PinoLogger.instance = new PinoLogger();
     }
-    return Logger.instance;
+    return PinoLogger.instance;
   }
 
   // ==========================================================================
@@ -116,7 +135,7 @@ export class Logger {
       this._logFileStream.end();
       this._logFileStream = null;
     }
-    Logger.instance = null;
+    PinoLogger.instance = null;
   }
 
   // ==========================================================================
@@ -141,11 +160,11 @@ export class Logger {
 // Convenience Functions
 // ============================================================================
 
-let _singleton: Logger | null = null;
+let _singleton: PinoLogger | null = null;
 
 export function getLogger(): Logger {
   if (!_singleton) {
-    _singleton = Logger.getInstance();
+    _singleton = PinoLogger.getInstance();
   }
   return _singleton;
 }

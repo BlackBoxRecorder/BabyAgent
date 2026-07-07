@@ -14,16 +14,21 @@ import type {
 } from "./types.js";
 import type { LLMFunctionDef } from "../tools/interface/index.js";
 import type { ModelEntry } from "./models.js";
+import type { BillingCalculator } from "./billing.js";
+import { DefaultBillingCalculator } from "./billing.js";
 
 export class ChatClient implements LLMClient {
   private models: ModelEntry[];
   private _currentModelIndex = 0;
+  private billingCalculator: BillingCalculator;
 
-  constructor(models: ModelEntry[]) {
+  constructor(models: ModelEntry[], billingCalculator?: BillingCalculator) {
     if (models.length === 0) {
       throw new Error("ChatClient requires at least one model entry.");
     }
     this.models = models;
+    this.billingCalculator =
+      billingCalculator ?? new DefaultBillingCalculator();
   }
 
   /** The model ID currently in use. */
@@ -184,7 +189,10 @@ export class ChatClient implements LLMClient {
               }
 
               if (usage) {
-                billing = this._computeBilling(usage);
+                billing = this.billingCalculator.compute(
+                  usage,
+                  this.models[this._currentModelIndex].cost,
+                );
               }
 
               yield {
@@ -214,23 +222,5 @@ export class ChatClient implements LLMClient {
     } finally {
       clearTimeout(timeoutId);
     }
-  }
-
-  /**
-   * Compute billing from usage and current model's cost rates.
-   * Returns BillingInfo with costs broken down by category.
-   */
-  private _computeBilling(usage: TokenUsage): BillingInfo {
-    const cost = this.models[this._currentModelIndex].cost;
-    const PER_MILLION = 1_000_000;
-    const inputCost = (usage.prompt_tokens * cost.input) / PER_MILLION;
-    const outputCost = (usage.completion_tokens * cost.output) / PER_MILLION;
-    const cacheReadCost =
-      ((usage.prompt_cache_hit_tokens ?? 0) * cost.cacheRead) / PER_MILLION;
-    const cacheWriteCost =
-      ((usage.prompt_cache_miss_tokens ?? 0) * cost.cacheWrite) / PER_MILLION;
-    const totalCost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
-
-    return { inputCost, outputCost, cacheReadCost, cacheWriteCost, totalCost };
   }
 }

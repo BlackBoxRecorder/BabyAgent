@@ -19,6 +19,7 @@ import {
   type ToolRegistry,
   type ToolResult,
 } from "./tools/interface/index.js";
+import type { Logger } from "./logger.js";
 import { getLogger } from "./logger.js";
 
 // ============================================================================
@@ -35,6 +36,8 @@ export interface AgentConfig {
   systemPrompt: string;
   /** Maximum ReAct iterations (prevents infinite loops), default: 10 */
   maxIterations?: number;
+  /** Logger instance (optional, defaults to global logger) */
+  logger?: Logger;
 }
 
 /** Result of an agent run */
@@ -45,6 +48,30 @@ export interface AgentResult {
   /** All messages produced during this run (input + output).
    *  The caller must NOT mutate the input array — Agent copies it internally. */
   allMessages: Message[];
+}
+
+/**
+ * Abstract interface for Agent session state.
+ * Decouples the Coordinator from the concrete Agent implementation,
+ * making the seam between them explicit and testable.
+ */
+export interface AgentSession {
+  /** Current conversation messages. */
+  getMessages(): readonly Message[];
+  /** Replace the conversation message list (e.g. on session switch). */
+  setMessages(messages: Message[]): void;
+  /** The system prompt for the conversation. */
+  getSystemPrompt(): string;
+  /** Currently active model ID. */
+  getCurrentModel(): string;
+  /** Rotate to the next model in the LLM client's model list. */
+  switchModel(): void;
+  /**
+   * Run the agent with a pre-built message list (for session continuation).
+   * The caller is responsible for including system + user messages.
+   * Yields streaming events for real-time display.
+   */
+  runWithMessages(inputMessages: Message[]): AsyncGenerator<AgentStreamEvent>;
 }
 
 /** Events emitted during a streaming agent run */
@@ -62,20 +89,21 @@ export type AgentStreamEvent =
 // Agent Implementation
 // ============================================================================
 
-export class Agent {
+export class Agent implements AgentSession {
   private llm: LLMClient;
   private toolRegistry: ToolRegistry;
   private systemPrompt: string;
   private maxIterations: number;
   private _conversationMessages: Message[] = [];
   private _currentModel: string;
-  private logger = getLogger();
+  private logger: Logger;
 
   constructor(config: AgentConfig) {
     this.llm = config.llm;
     this.systemPrompt = config.systemPrompt;
     this.maxIterations = config.maxIterations ?? 100;
     this._currentModel = config.llm.currentModelId;
+    this.logger = config.logger ?? getLogger();
 
     this.toolRegistry = new DefaultToolRegistry();
     for (const tool of config.tools) {
@@ -83,24 +111,28 @@ export class Agent {
     }
   }
 
-  /** Expose the system prompt so callers can build message lists. */
-  get systemPromptText(): string {
-    return this.systemPrompt;
-  }
-
-  /** Currently active model ID. */
-  get currentModel(): string {
-    return this._currentModel;
-  }
+  // ==========================================================================
+  // AgentSession interface implementation
+  // ==========================================================================
 
   /** Current conversation messages (owned by the Agent). */
-  get conversationMessages(): readonly Message[] {
+  getMessages(): readonly Message[] {
     return this._conversationMessages;
   }
 
   /** Replace the current conversation message list (e.g. on session switch). */
-  setConversationMessages(messages: Message[]): void {
+  setMessages(messages: Message[]): void {
     this._conversationMessages = [...messages];
+  }
+
+  /** The system prompt for the conversation. */
+  getSystemPrompt(): string {
+    return this.systemPrompt;
+  }
+
+  /** Currently active model ID. */
+  getCurrentModel(): string {
+    return this._currentModel;
   }
 
   /** Rotate to the next model in the LLM client's model list. */

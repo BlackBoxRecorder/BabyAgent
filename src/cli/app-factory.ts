@@ -7,7 +7,7 @@
 import { Agent } from "../agent.js";
 import { SessionManager } from "../session.js";
 import { ConversationCoordinator } from "../coordinator.js";
-import { ChatClient } from "../llm/index.js";
+import { ChatClient, DefaultBillingCalculator } from "../llm/index.js";
 import {
   loadModelConfig,
   getAllModels,
@@ -19,6 +19,9 @@ import { McpManager, type ServerStatus } from "../mcp/index.js";
 import type { Tool } from "../tools/interface/index.js";
 import { SkillManager } from "../skills.js";
 import { loadSystemPrompt, getSystemPromptPath } from "../llm/prompt.js";
+import { getLogger } from "../logger.js";
+import { DefaultCommandHandler } from "./command.js";
+import type { CommandHandler } from "./command.js";
 
 // ============================================================================
 // Types
@@ -32,6 +35,8 @@ export interface AppComponents {
   mcpStatuses: readonly ServerStatus[];
   /** List of available models from the config, for UI switching. */
   models: ModelEntry[];
+  /** Command handler for slash commands. */
+  commandHandler: CommandHandler;
 }
 
 // ============================================================================
@@ -111,18 +116,35 @@ export async function createApp(): Promise<AppComponents> {
   }
 
   // ------------------------------------------------------------------
+  // Logger
+  // ------------------------------------------------------------------
+  const logger = getLogger();
+
+  // ------------------------------------------------------------------
+  // Billing calculator
+  // ------------------------------------------------------------------
+  const billingCalculator = new DefaultBillingCalculator();
+
+  // ------------------------------------------------------------------
   // Agent + Coordinator
   // ------------------------------------------------------------------
   const agent = new Agent({
-    llm: new ChatClient(allModels),
+    llm: new ChatClient(allModels, billingCalculator),
     tools: allTools,
     systemPrompt,
+    logger,
   });
 
   const coordinator = new ConversationCoordinator({
     agent,
     sessionManager: new SessionManager(),
+    logger,
   });
+
+  // ------------------------------------------------------------------
+  // Command handler
+  // ------------------------------------------------------------------
+  const commandHandler = new DefaultCommandHandler();
 
   // ------------------------------------------------------------------
   // Return all components
@@ -134,5 +156,6 @@ export async function createApp(): Promise<AppComponents> {
     tools: allTools,
     mcpStatuses,
     models: allModels,
+    commandHandler,
   };
 }
