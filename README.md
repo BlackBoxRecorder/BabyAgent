@@ -1,8 +1,15 @@
 # babyAgent
 
-> 轻量级终端 AI 智能体 — 类 Claude Code 的本地 CLI 替代方案，由 DeepSeek 驱动。
+> 从零构建的轻量级终端 AI 智能体 — 学习 Agent 开发的实践项目，由 DeepSeek 驱动。
 
-babyAgent 是一个基于 **ReAct**（推理-行动-观察）模式的交互式 AI 智能体，运行在终端中。它将 DeepSeek 等 LLM 的强大推理能力与 bash 执行、文件系统操作和 MCP（Model Context Protocol）工具相结合，封装在持久化的会话式 REPL 中。
+babyAgent 是一个完全从零开始构建的交互式 AI 智能体，运行在终端中。它基于 **ReAct**（推理-行动-观察）模式，将 DeepSeek 等 LLM 的强大推理能力与 bash 执行、文件系统操作和 MCP（Model Context Protocol）工具相结合，封装在持久化的会话式 REPL 中。
+
+**🎯 学习价值**：这个项目是学习 Agent 开发的绝佳实践，通过它可以深入理解：
+- **Agent 架构模式**：学习 ReAct 循环、工具调用、会话管理等核心概念
+- **LLM 集成实践**：掌握 LLM API 集成、流式传输、工具调用等技术
+- **工具系统设计**：了解如何设计和实现可扩展的工具系统、MCP 协议集成
+
+无论是想构建自己的 AI 智能体，还是想深入理解现代 AI 应用架构，babyAgent 都提供了清晰的代码实现和完整的开发体验。
 
 ## 特性
 
