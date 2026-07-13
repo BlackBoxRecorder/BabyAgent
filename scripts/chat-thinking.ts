@@ -30,8 +30,8 @@ async function thinkingNonStream() {
   const start = Date.now();
   let res: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages, undefined)) {
-    if (chunk.accumulated) {
-      res = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res = chunk.fullResponse;
     }
   }
   printElapsed(start);
@@ -49,12 +49,6 @@ async function thinkingNonStream() {
     res!.content?.slice(0, 200) +
       (res!.content && res!.content.length > 200 ? "..." : ""),
   );
-  if (res!.usage?.completion_tokens_details) {
-    printKV(
-      "reasoning_tokens",
-      res!.usage.completion_tokens_details.reasoning_tokens,
-    );
-  }
 }
 
 // ── 2. 流式思考模式 ────────────────────────────────────
@@ -81,38 +75,32 @@ async function thinkingStream() {
       content += chunk.delta.content;
     }
 
-    if (chunk.accumulated) {
+    if (chunk.fullResponse) {
       printKV("chunks 总数", chunkCount);
 
       // 验证聚合 reasoning_content
-      if (chunk.accumulated.reasoning_content) {
+      if (chunk.fullResponse.reasoning_content) {
         printKV(
           "accumulated.reasoning_content 长度",
-          `${chunk.accumulated.reasoning_content.length} 字符`,
+          `${chunk.fullResponse.reasoning_content.length} 字符`,
         );
         const matchAccum =
-          reasoningContent === chunk.accumulated.reasoning_content;
+          reasoningContent === chunk.fullResponse.reasoning_content;
         console.log(
           `reasoning 增量拼接 与 accumulated 一致: ${matchAccum ? "✅" : "⚠️ 不一致!"}`,
         );
       }
 
       // 验证聚合 content
-      const matchContent = content === (chunk.accumulated.content ?? "");
+      const matchContent = content === (chunk.fullResponse.content ?? "");
       console.log(
         `content 增量拼接 与 accumulated 一致: ${matchContent ? "✅" : "⚠️ 不一致!"}`,
       );
 
       printKV(
         "accumulated.content",
-        chunk.accumulated.content?.slice(0, 200) ?? "(null)",
+        chunk.fullResponse.content?.slice(0, 200) ?? "(null)",
       );
-      if (chunk.accumulated.usage?.completion_tokens_details) {
-        printKV(
-          "reasoning_tokens",
-          chunk.accumulated.usage.completion_tokens_details.reasoning_tokens,
-        );
-      }
     }
   }
 
@@ -131,8 +119,8 @@ async function thinkingDisabled() {
   const start = Date.now();
   let res: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages, undefined)) {
-    if (chunk.accumulated) {
-      res = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res = chunk.fullResponse;
     }
   }
   printElapsed(start);

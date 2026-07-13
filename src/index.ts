@@ -13,14 +13,7 @@ export { SessionManager } from "./session.js";
 export { ChatClient } from "./llm/llm.js";
 
 // Logger
-export {
-  Logger,
-  getLogger,
-  logError,
-  logWarn,
-  logInfo,
-  logDebug,
-} from "./logger.js";
+export { getLogger, logError, logWarn, logInfo, logDebug } from "./logger.js";
 
 // Types
 export type { Message, TokenUsage, BillingInfo } from "./llm/index.js";

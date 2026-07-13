@@ -21,7 +21,7 @@ const client = await createClient();
 
 // ── 工具定义 ────────────────────────────────────────────
 
-const weatherTool = {
+export const weatherTool = {
   type: "function" as const,
   function: {
     name: "get_weather",
@@ -41,7 +41,7 @@ const weatherTool = {
 
 // ── 模拟工具执行 ────────────────────────────────────────
 
-function executeGetWeather(args: { city: string }): string {
+export function executeGetWeather(args: { city: string }): string {
   const weathers: Record<string, string> = {
     北京: "晴天，25°C，湿度 40%",
     上海: "多云，22°C，湿度 65%",
@@ -51,7 +51,7 @@ function executeGetWeather(args: { city: string }): string {
   return weathers[args.city] ?? `未知城市 "${args.city}"，请检查城市名称。`;
 }
 
-const attractionsTool = {
+export const attractionsTool = {
   type: "function" as const,
   function: {
     name: "get_attractions",
@@ -69,7 +69,7 @@ const attractionsTool = {
   },
 };
 
-const transportTool = {
+export const transportTool = {
   type: "function" as const,
   function: {
     name: "get_transport",
@@ -93,7 +93,7 @@ const transportTool = {
 
 // ── 模拟工具执行 ────────────────────────────────────────
 
-function executeGetAttractions(args: { city: string }): string {
+export function executeGetAttractions(args: { city: string }): string {
   const attractions: Record<string, string> = {
     北京: "故宫、长城、天坛、颐和园、798艺术区",
     上海: "外滩、东方明珠、南京路步行街、豫园、迪士尼乐园",
@@ -103,7 +103,7 @@ function executeGetAttractions(args: { city: string }): string {
   return attractions[args.city] ?? `未知城市 "${args.city}"，请检查城市名称。`;
 }
 
-function executeGetTransport(args: {
+export function executeGetTransport(args: {
   from_city: string;
   to_city: string;
 }): string {
@@ -134,8 +134,8 @@ async function singleToolCall() {
   // Step 1: 发送请求，期望 LLM 返回 tool_calls
   let res1: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages, [weatherTool])) {
-    if (chunk.accumulated) {
-      res1 = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res1 = chunk.fullResponse;
     }
   }
   printKV("Step 1 - finish_reason", res1!.finish_reason);
@@ -169,8 +169,8 @@ async function singleToolCall() {
   // Step 3: 获取最终回答
   let res2: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages, [weatherTool])) {
-    if (chunk.accumulated) {
-      res2 = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res2 = chunk.fullResponse;
     }
   }
   printKV("Step 3 - finish_reason", res2!.finish_reason);
@@ -189,8 +189,8 @@ async function noToolNeeded() {
   const start = Date.now();
   let res: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages, [weatherTool])) {
-    if (chunk.accumulated) {
-      res = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res = chunk.fullResponse;
     }
   }
   printElapsed(start);
@@ -246,8 +246,10 @@ async function multiTurnToolCall() {
       }
 
       // 最后一个 chunk 包含聚合结果
-      if (chunk.accumulated) {
-        accumulated = chunk.accumulated;
+      if (chunk.fullResponse) {
+        accumulated = chunk.fullResponse;
+        console.log(chunk.usage);
+        console.log(chunk.billing);
       }
     }
 

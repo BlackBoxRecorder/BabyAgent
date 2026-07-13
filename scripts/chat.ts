@@ -29,20 +29,14 @@ async function simpleChat() {
   const start = Date.now();
   let res: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages)) {
-    if (chunk.accumulated) {
-      res = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res = chunk.fullResponse;
     }
   }
   printElapsed(start);
 
   printKV("content", res!.content);
   printKV("finish_reason", res!.finish_reason);
-  if (res!.usage) {
-    printKV(
-      "usage",
-      `prompt=${res!.usage.prompt_tokens} completion=${res!.usage.completion_tokens} total=${res!.usage.total_tokens}`,
-    );
-  }
 }
 
 // ── 2. 多轮对话 ────────────────────────────────────────
@@ -59,8 +53,8 @@ async function multiTurnChat() {
   // Turn 1
   let res1: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages)) {
-    if (chunk.accumulated) {
-      res1 = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res1 = chunk.fullResponse;
     }
   }
   messages.push({ role: "assistant", content: res1!.content! });
@@ -69,8 +63,8 @@ async function multiTurnChat() {
   messages.push({ role: "user", content: "它有多高？" });
   let res2: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages)) {
-    if (chunk.accumulated) {
-      res2 = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res2 = chunk.fullResponse;
     }
   }
   messages.push({ role: "assistant", content: res2!.content! });
@@ -79,9 +73,6 @@ async function multiTurnChat() {
 
   console.log(`\nTurn 1: ${res1!.content}`);
   console.log(`Turn 2: ${res2!.content}`);
-  if (res2!.usage) {
-    printKV("total_tokens", res2!.usage.total_tokens);
-  }
 }
 
 // ── 3. System 消息 ──────────────────────────────────────
@@ -100,8 +91,8 @@ async function systemPromptChat() {
   const start = Date.now();
   let res: LLMResponse | undefined;
   for await (const chunk of client.chatStream(messages)) {
-    if (chunk.accumulated) {
-      res = chunk.accumulated;
+    if (chunk.fullResponse) {
+      res = chunk.fullResponse;
     }
   }
   printElapsed(start);

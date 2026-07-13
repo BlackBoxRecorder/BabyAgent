@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 4: MCP 集成 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 4: MCP 集成 — 借助标准协议连接万物</h1>
+
+<div class="meta">
+  <span>📅 课程 4 / 6</span>
+  <span>⏱ 14 分钟</span>
+  <span>📂 <code>src/mcp/</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>理解 Model Context Protocol (MCP) 如何在 babyAgent 中集成——从配置文件加载、传输层连接、工具发现，到适配为标准的 Tool 接口。
+</div>
+
+<h2>1. 为什么需要 MCP？</h2>
+
+<p>第 3 课的工具系统需要为每个工具手写代码实现。但如果想连接外部服务（浏览器、数据库、设计工具等），每个都手写显然不现实。</p>
+
+<p><strong>MCP (Model Context Protocol)</strong> 就是答案——它定义了一个标准化的工具服务器协议：</p>
+
+<ul>
+  <li><strong>统一接口</strong>：所有 MCP 服务器都实现 <code>tools/list</code> 和 <code>tools/call</code> 方法</li>
+  <li><strong>两种传输</strong>：本地进程（stdio）和远程 HTTP 服务（HTTP/SSE）</li>
+  <li><strong>即插即用</strong>：配置一个 <code>mcp.json</code> 文件，agent 自动发现工具</li>
+</ul>
+
+<div class="callout callout-tip">
+  <strong>💡 项目当前配置了哪些 MCP 服务器？</strong> 查看 <code>src/mcp/config.ts</code> —— 从 <code>~/.babyAgent/mcp.json</code> 加载。<br>
+  从 <code>mcps/</code> 目录可以看到已经配置了：browser-use、context7、playwright、sequential-thinking 等服务器。
+</div>
+
+<h2>2. 架构总览</h2>
+
+<pre><code>┌──────────────────────────────────────────────────────┐
+│                    Agent (agent.ts)                   │
+│                   ToolRegistry (通用接口)              │
+└────────────────────────┬─────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────┐
+│              McpManager.loadAllTools()                 │
+│  负责：配置文件 → 传输层 → 工具发现 → 适配为 Tool[]     │
+└──────┬───────────────────────────────────┬───────────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐              ┌──────────────────┐
+│ stdio 传输层  │              │  HTTP/SSE 传输层  │
+│ (子进程通信)   │              │  (远程 HTTP 服务) │
+└──────────────┘              └──────────────────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐              ┌──────────────────┐
+│ Node 进程     │              │  远程 MCP 服务器   │
+│ (本地运行)     │              │  (如 browser-use) │
+└──────────────┘              └──────────────────┘</code></pre>
+
+<h2>3. 配置加载：mcp.json</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/config.ts"><code>src/mcp/config.ts</code></a>，配置格式兼容 Claude Code / VS Code MCP：</p>
+
+<pre><code><span class="code-loc">config.ts:15-29 类型定义</span>
+// stdio 模式：启动一个本地进程
+export interface StdioServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record&lt;string, string&gt;;
+}
+
+// HTTP 模式：连接远程服务器
+export interface HttpServerConfig {
+  url: string;
+  headers?: Record&lt;string, string&gt;;
+}</code></pre>
+
+<p>在 <code>~/.babyAgent/mcp.json</code> 中的实际配置是这样：</p>
+
+<pre><code>{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp"],
+      "env": { "DEBUG": "true" }
+    },
+    "browser-use": {
+      "url": "http://localhost:8123/sse"
+    }
+  }
+}</code></pre>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>Kebab-case 命名</strong>：服务器名必须小写字母+数字+连字符（如 <code>my-server</code>），提前发现命名错误</li>
+    <li><strong>互斥传输</strong>：command 和 url 只能二选一，不能同时设置</li>
+    <li><strong>空配置容错</strong>：文件不存在时返回空配置，不是报错</li>
+  </ul>
+</div>
+
+<p>加载完整链路：</p>
+
+<pre><code><span class="code-loc">config.ts:176-226</span>
+function loadConfig() {
+  // 1. 读取 ~/.babyAgent/mcp.json
+  const content = fs.readFileSync(filePath, "utf-8");
+  const raw = JSON.parse(content);
+
+  // 2. 提取 mcpServers 对象
+  const serversRaw = raw.mcpServers;
+
+  // 3. 逐一校验每个服务器配置
+  validateConfig(cfg);  // 检查命名、传输类型、参数格式
+
+  return { config: { servers }, errors };
+}</code></pre>
+
+<h2>4. 传输层：两种通信方式</h2>
+
+<h3>4.1 Stdio 传输</h3>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/transports/stdio.ts"><code>src/mcp/transports/stdio.ts</code></a>：</p>
+
+<pre><code><span class="code-loc">stdio.ts:32-49</span>
+// 1. 创建 stdio 传输通道，spawn 一个子进程
+const transport = new StdioClientTransport({
+  command: config.command,   // 如 "npx"
+  args: config.args,         // 如 ["@playwright/mcp"]
+  env: config.env,
+});
+
+// 2. 创建 MCP Client，绑定传输层
+const client = new Client(
+  { name: "babyAgent", version: "1.0.0" },
+  { capabilities: {} },
+);
+
+// 3. 连接（带 30 秒超时）
+await withTimeout(client.connect(transport), 30000);</code></pre>
+
+<p><strong>工作流程</strong>：Agent 启动一个子进程 → 子进程通过 stdin/stdout 与 Agent 通信 → 使用 MCP 协议 JSON-RPC 消息交换。</p>
+
+<h3>4.2 HTTP/SSE 传输</h3>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/transports/http.ts"><code>src/mcp/transports/http.ts</code></a>：</p>
+
+<pre><code><span class="code-loc">http.ts:32-48</span>
+// 1. 创建 Streamable HTTP 传输
+const transport = new StreamableHTTPClientTransport(
+  new URL(config.url),       // 如 "http://localhost:8123/sse"
+  { requestInit: config.headers ? { headers } : undefined },
+);
+
+// 2. 创建 MCP Client
+const client = new Client(
+  { name: "babyAgent", version: "1.0.0" },
+  { capabilities: {} },
+);
+
+// 3. 连接（带 30 秒超时）
+await withTimeout(client.connect(transport), 30000);</code></pre>
+
+<p><strong>与 SSE 的关系</strong>：注意这里也用了 SSE！第 1 课学的 SSE 流式协议不仅用于 LLM 输出，也被 MCP HTTP 传输层用来接收工具调用结果。SSE 是通用的推送协议。</p>
+
+<h2>5. 工具适配：连接 MCP 与 Tool 接口</h2>
+
+<p>这是最巧妙的部分——<a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/tool-adapter.ts"><code>src/mcp/tool-adapter.ts</code></a> 把 MCP 工具转换成第 3 课学的 <code>Tool</code> 接口：</p>
+
+<pre><code><span class="code-loc">tool-adapter.ts:28-58</span>
+export function adaptMcpTool(serverName, mcpTool, transport): Tool {
+  return {
+    // ⭐ 工具名加前缀，防止不同服务器同名冲突
+    name: `${serverName}_${mcpTool.name}`,
+
+    description: mcpTool.description,
+
+    // ⭐ 标准化 JSON Schema（处理 MCP 的灵活性）
+    parameters: normalizeSchema(mcpTool.inputSchema),
+
+    // ⭐ 执行时通过 transport.callTool 调用 MCP 服务器
+    execute: async (params) => {
+      const result = await transport.callTool(mcpTool.name, params);
+      return {
+        success: !result.isError,
+        output: extractTextContent(result.content),
+        error: result.isError ? extractTextContent(result.content) : undefined,
+      };
+    },
+  };
+}</code></pre>
+
+<div class="callout callout-tip">
+  <strong>⚡ 关键思维：</strong> 适配器（Adapter）模式！MCP 的工具定义 ≠ 项目的 Tool 接口，但通过 <code>adaptMcpTool</code>，MCP 工具<strong>看起来就像</strong>一个普通的 Tool。
+</div>
+
+<p>适配后的工具名示例：</p>
+<ul>
+  <li><code>playwright_browser_navigate</code> → 来自 playwright 服务器的 browser_navigate 工具</li>
+  <li><code>context7_resolve-library-id</code> → 来自 context7 服务器的 resolve-library-id 工具</li>
+  <li><code>browser-use_navigate_page</code> → 来自 browser-use 服务器的 navigate_page 工具</li>
+</ul>
+
+<h2>6. McpManager：把一切串起来</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/mcp-manager.ts"><code>src/mcp/mcp-manager.ts</code></a>：</p>
+
+<pre><code><span class="code-loc">mcp-manager.ts:51-114</span>
+async loadAllTools(): Promise&lt;Tool[]&gt; {
+  // 1. 加载并校验配置
+  const { config, errors } = loadConfig(this.configPath);
+
+  for (const [name, serverCfg] of Object.entries(config.servers)) {
+    try {
+      // 2. 根据配置创建对应传输层
+      const t = await this.createTransport(name, serverCfg);
+
+      // 3. 发现工具
+      const mcpTools = await t.listTools();
+
+      // 4. 适配为 Tool 接口
+      const adapted = mcpTools.map(mcpTool => adaptMcpTool(name, mcpTool, t));
+
+      allTools.push(...adapted);
+    } catch (err) {
+      // ⭐ 单个服务器失败不影响其他服务器
+      console.error(`[MCP] ${name}: connection failed — ${err}`);
+    }
+  }
+
+  return allTools;
+}</code></pre>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>优雅降级</strong>：某个 MCP 服务器挂了不影响其他服务器，agent 照常启动</li>
+    <li><strong>ServerStatus 追踪</strong>：记录每个服务器的连接状态和工具数量，供 UI 展示</li>
+    <li><strong>资源释放</strong>：<code>dispose()</code> 方法关闭所有传输连接，防止僵尸进程</li>
+  </ul>
+</div>
+
+<h2>7. 完整集成链路</h2>
+
+<p>现在是时候把 4 节课的知识串起来了：</p>
+
+<div class="sim-panel">
+  <h3>&nbsp;MCP 工具从配置到执行的完整链路</h3>
+  <div style="font-family:var(--mono);font-size:0.85rem;line-height:2.2;">
+    <span style="color:var(--muted);">① 配置</span> ~/.babyAgent/mcp.json 定义服务器<br>
+    <span style="color:var(--muted);">② 加载</span> loadConfig() 校验并解析<br>
+    <span style="color:var(--muted);">③ 连接</span> createStdioTransport / createHttpTransport<br>
+    <span style="color:var(--muted);">④ 发现</span> client.listTools() → McpToolDef[]<br>
+    <span style="color:var(--muted);">⑤ 适配</span> adaptMcpTool() → Tool 接口实例（第 3 课）<br>
+    <span style="color:var(--muted);">⑥ 注册</span> 加入 Agent 的 ToolRegistry<br>
+    <span style="color:var(--muted);">⑦ 调用</span> LLM 返回 tool_calls → agent 执行（第 2 课）→ transport.callTool()<br>
+    <span style="color:var(--muted);">⑧ 返回</span> 提取文本内容，回到 ReAct 循环
+  </div>
+</div>
+
+<h2>8. 对比：自定义工具 vs MCP 工具</h2>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--code-bg);">
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">维度</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">自定义工具 (第 3 课)</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">MCP 工具 (第 4 课)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">实现方式</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">在项目内写代码</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">外部进程/服务，改配置即可</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">注册方式</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">代码中 toolRegistry.register()</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">MCP 服务器启动后自动发现</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">适用范围</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">核心工具（bash、fs 等）</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">任何外部服务（浏览器、数据库等）</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">错误处理</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">try-catch 兜底</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">transport 层 + try-catch 双层保护</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">命名空间</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">短名称如 "bash"</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">带前缀如 "playwright_browser_navigate"</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>9. ✅ 检测理解</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. MCP 支持哪两种传输模式？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">A. TCP 和 UDP</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">B. stdio（子进程）和 HTTP/SSE（远程服务）</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">C. WebSocket 和 gRPC</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. 共享内存和管道</label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. MCP 工具名为什么加上服务器名前缀（如 <code>playwright_browser_navigate</code>）？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. 为了更好看</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">B. 因为 API 要求必须带前缀</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">C. 防止不同 MCP 服务器的同名工具冲突</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. 为了让 LLM 知道工具来自哪里</label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. 某个 MCP 服务器连接失败时，McpManager 会怎么处理？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">A. 抛出异常，agent 启动失败</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">B. 重试 3 次后放弃</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">C. 阻塞等待服务器恢复</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">D. 打印错误日志，跳过该服务器继续加载其他工具</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<h2>10. 📖 延伸阅读</h2>
+
+<ul>
+  <li><a href="https://spec.modelcontextprotocol.io/" target="_blank">MCP 官方规范</a> — 完整的协议细节</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/mcp-manager.ts"><code>src/mcp/mcp-manager.ts</code></a> — McpManager 实现</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/config.ts"><code>src/mcp/config.ts</code></a> — 配置加载与校验</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/tool-adapter.ts"><code>src/mcp/tool-adapter.ts</code></a> — 适配器核心</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/transports/stdio.ts"><code>src/mcp/transports/stdio.ts</code></a> — Stdio 传输实现</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/mcp/transports/http.ts"><code>src/mcp/transports/http.ts</code></a> — HTTP 传输实现</li>
+  <li><a href="./0003-tool-system.html">Lesson 3: 工具系统</a> — Tool 接口和注册表</li>
+  <li><a href="./lessons/0005-skill-system.html">Lesson 5: Skill 系统</a> — 通过提示词给 agent 注入领域知识</li>
+</ul>
+
+<div class="callout">
+  <strong>💬 有疑问？</strong> 理解了 MCP 后，第 5 课将介绍 Skill 系统——如何用 prompt 模板让 agent 具备特定领域的专业能力。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+  options.forEach(o => { if (o.dataset.correct === "true") o.classList.add("correct"); });
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

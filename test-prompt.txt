@@ -5,3 +5,9 @@
 解当前项目,然后编写一个 README.md
 
 ---
+
+抓取这个网页内容提取 markdown 并保存到当前目录:https://baoyu.io/translations/2026-05-16/the-founders-playbook-building-an-ai-native-startup
+
+---
+
+解析这个网页内容并提取 markdown 并保存到当前目录:https://baoyu.io/translations/2026-05-16/the-founders-playbook-building-an-ai-native-startup

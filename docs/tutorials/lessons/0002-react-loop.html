@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 2: ReAct 循环 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 2: ReAct 循环 — 推理与执行的交响乐</h1>
+
+<div class="meta">
+  <span>📅 课程 2 / 6</span>
+  <span>⏱ 15 分钟</span>
+  <span>📂 <code>src/agent.ts</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>理解 ReAct（推理-执行）循环的完整流程——Agent 如何在 LLM 调用和工具执行之间反复切换，直到得到最终答案。
+</div>
+
+<h2>1. 什么是 ReAct？</h2>
+
+<p><strong>ReAct = Reasoning + Acting</strong>，是一种让大模型交替进行"推理"和"行动"的模式。Agent 的核心循环是：</p>
+
+<pre><code>while (true) {
+  思考 → 大模型输出（文字或工具调用）
+  if (输出是最终回答) break;
+  执行 → 调用外部工具，结果传回给大模型
+  // 继续下一轮思考
+}</code></pre>
+
+<p>为什么需要多轮？因为 <strong>HTTP 是无状态的</strong>——每次 LLM API 调用都是独立的。一轮调用结束后，需要通过 <code>finish_reason</code> 决定下一步：</p>
+
+<ul>
+  <li><code>finish_reason: "stop"</code> → 模型说完了，结束循环</li>
+  <li><code>finish_reason: "tool_calls"</code> → 模型要调用工具，把结果传回去继续</li>
+  <li><code>finish_reason: "length"</code> → token 超限，异常结束</li>
+</ul>
+
+<h2>2. 源码解剖：runWithMessages()</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/agent.ts"><code>src/agent.ts</code></a>，核心方法是 <code>runWithMessages()</code>。它是整个 agent 的"大脑"。</p>
+
+<h3>2.1 主循环</h3>
+
+<pre><code><span class="code-loc">agent.ts:157-294</span>
+while (iterations &lt; this.maxIterations) {
+  iterations++;
+
+  // 1. 流式调用 LLM
+  for await (const chunk of this.llm.chatStream(messages, tools)) {
+    yield { type: "chunk", chunk };
+    if (chunk.fullResponse) fullResponse = chunk.fullResponse;
+  }
+
+  // 2. 根据 finish_reason 判断
+  if (!fullResponse) { /* 无响应 → 失败 */ }
+  else if (finish_reason === "length" / "content_filter" / ...) { /* 异常 → 失败 */ }
+  else if (finish_reason === "stop") { /* 正常结束 → 返回结果 */ }
+
+  // 3. 执行工具调用（finish_reason === "tool_calls"）
+  // ...执行每个 tool，push 结果到 messages...
+  // → 回到 while 开头，继续下一轮
+}</code></pre>
+
+<p>注意：<strong>第 1 步和第 3 步之间没有 else 关键字</strong>——因为 <code>finish_reason === "tool_calls"</code> 时，代码会自然落到第 3 步执行工具，然后循环继续。这是 ReAct 的"行动"阶段。</p>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>messages 是局部变量</strong>：从 inputMessages 拷贝后，Agent 自己管理，不修改调用者的数组</li>
+    <li><strong>streaming 贯穿始终</strong>：每一轮 LLM 调用都是流式的，通过 <code>yield { type: "chunk" }</code> 实时输出</li>
+    <li><strong>fullResponse 只在最后一个 chunk 出现</strong>：这就是第 1 课中 <code>LLMStreamChunk.fullResponse</code> 的作用</li>
+  </ul>
+</div>
+
+<h3>2.2 分支逻辑可视化</h3>
+
+<p>下图展示了一次 <code>runWithMessages()</code> 执行中，messages 数组的变化过程：</p>
+
+<div class="sim-panel">
+  <h3>ReAct 循环实时模拟</h3>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.75rem;">观察两次 LLM 调用之间 message 列表的变化</p>
+  <div class="sim-output" id="react-output" style="max-height:200px;">点击下方按钮开始模拟</div>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button class="sim-btn" onclick="reactStep()">▶ 执行一步</button>
+    <button class="sim-btn" style="background:var(--muted);" onclick="reactReset()">↺ 重置</button>
+  </div>
+</div>
+
+<h3>2.3 工具调用的执行细节</h3>
+
+<p>当 <code>finish_reason === "tool_calls"</code> 时，agent 进入工具执行阶段：</p>
+
+<pre><code><span class="code-loc">agent.ts:212-293</span>
+// 先 push assistant 消息（包含 tool_calls）
+messages.push({
+  role: "assistant",
+  content: fullResponse.content,    // 可能为 null
+  tool_calls: fullResponse.tool_calls,
+});
+
+// 遍历每个工具调用
+for (const toolCall of fullResponse.tool_calls ?? []) {
+  const tool = this.toolRegistry.getTool(toolCall.function.name);
+
+  // 安全执行：任何异常都被捕获，不会中断循环
+  let result: ToolResult;
+  try {
+    const params = JSON.parse(toolCall.function.arguments);
+    result = await tool.execute(params);
+  } catch (err) {
+    result = { success: false, output: "", error: String(err) };
+  }
+
+  yield { type: "tool_result", tool, params, result };
+
+  // ⭐ 关键：将工具结果作为 tool 消息加入对话
+  messages.push({
+    role: "tool",
+    tool_call_id: toolCall.id,
+    content: JSON.stringify(result),
+  });
+}
+
+// → while 循环继续，带着新消息再次调用 LLM</code></pre>
+
+<div class="callout callout-tip">
+  <strong>⚡ 消息结构演进：</strong><br>
+  一轮工具调用会在 messages 中插入 <strong>2 类新消息</strong>：<br>
+  <code>assistant (含 tool_calls)</code> → <code>tool (调用结果 1)</code> → <code>tool (调用结果 2)</code> → ...<br>
+  然后带着这些消息进入下一轮 LLM 调用——大模型"看到"了工具返回的结果，再决定下一步。
+</div>
+
+<p><strong>为什么工具错误也不中断循环？</strong>因为在 ReAct 模式下，大模型可以通过反馈自我修正。如果工具返回了错误，下一轮 LLM 调用时模型看到错误信息，可能会换一种方式调用，而不是让整个 agent 崩溃。</p>
+
+<h3>2.4 边界情况处理</h3>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--code-bg);">
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">场景</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">处理方式</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">代码位置</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">LLM 无响应</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">warn 日志，返回失败结果</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">第 172-183 行</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">达到 maxIterations</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">warn 日志，返回超限错误</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">第 296-309 行</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">工具名不存在</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">抛出错误 → 被 catch 转为 ToolResult.error</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">第 236-238 行</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">工具参数解析失败</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">捕获后 warn 日志，不中断流程</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">第 242-248 行</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">并行工具调用</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">for 循环依次执行，结果按 index 顺序加入</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">第 220-293 行</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. 理解 AgentStreamEvent</h2>
+
+<p>Agent 通过 <code>yield</code> 向外输出三种事件，供展示层（CLI/TUI）消费：</p>
+
+<pre><code><span class="code-loc">agent.ts:78-86</span>
+export type AgentStreamEvent =
+  | { type: "chunk";       chunk: LLMStreamChunk }          ← SSE 流式 chunk
+  | { type: "tool_result"; tool, params, result: ToolResult } ← 工具执行结果
+  | { type: "done";        result: AgentResult }              ← agent 运行结束</code></pre>
+
+<p>这个设计的好处：</p>
+<ul>
+  <li><strong>解耦展示层</strong>：CLI 可以实时打印 chunk，TUI 可以更新状态面板，双方都不需要理解 LLM API 细节</li>
+  <li><strong>可测试性</strong>：测试框架可以收集所有事件，断言关键点的执行顺序</li>
+  <li><strong>可观察性</strong>：工具调用的参数和结果都暴露在事件中，方便调试和日志</li>
+</ul>
+
+<h2>4. 从第 1 课到第 2 课</h2>
+
+<p>回顾 SSE 解析中提到的 <code>finish_reason</code>——现在可以看到它在整个 ReAct 循环中的角色了：</p>
+
+<div class="callout callout-eg">
+  <strong>📡 SSE 解析（第 1 课）→ 🧠 ReAct 循环（第 2 课）</strong><br><br>
+  SSE 解析的最终产出是 <code>fullResponse</code>（含 <code>finish_reason</code> 和 <code>tool_calls</code>）→<br>
+  ReAct 循环消费 <code>fullResponse</code>，根据 <code>finish_reason</code> 做决策 →<br>
+  需要执行工具时，调用 ToolRegistry 查找工具，执行后追加 tool 消息 →<br>
+  带着新消息再次调用 LLM（回到 SSE 解析）→ ...
+</div>
+
+<h2>5. ✅ 检测理解</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. ReAct 循环中，finish_reason 为 "tool_calls" 时，下一步做什么？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">A. 执行工具，把结果加入 messages，继续下一轮 LLM 调用</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">B. 直接结束循环</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">C. 丢弃 tool_calls，只取 content 作为回答</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. 抛出异常</label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. 工具执行的结果通过什么角色（role）的消息传回 LLM？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. <code>assistant</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">B. <code>user</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">C. <code>tool</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. <code>system</code></label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. 为什么工具执行出错（如工具名不存在）不会中断整个 agent 循环？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">A. 因为 JavaScript 会自动忽略错误</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">B. 所有工具执行包裹在 try-catch 中，错误转为 ToolResult 传给 LLM 自我修正</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">C. 工具执行前已经做了参数校验</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">D. 工具不存在时 agent 使用默认值代替</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<h2>6. 📖 延伸阅读</h2>
+
+<ul>
+  <li><a href="https://arxiv.org/abs/2210.03629" target="_blank">ReAct 原论文</a> — 推理与行动协同的原始研究</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/agent.ts"><code>src/agent.ts</code></a> — 完整实现，重点关注 <code>runWithMessages()</code> 的 while 循环</li>
+  <li><a href="./0001-sse-streaming.html">Lesson 1: SSE 流式解析</a> — 理解 LLM 调用的底层传输</li>
+  <li><a href="./lessons/0003-tool-system.html">Lesson 3: 工具系统</a> — 深入 Tool 接口和注册表</li>
+</ul>
+
+<div class="callout">
+  <strong>💬 有疑问？</strong> 随时向 agent 提问。理解 ReAct 循环是理解 agent 架构最关键的一步——接下来第 3 课我们将深入工具的实现。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+// --- ReAct 循环模拟 ---
+const steps = [
+  { phase: "llm_call_1", label: "第 1 轮 LLM 调用", msg: "发送 messages=[system, user('帮我查一下天气')] 给大模型" },
+  { phase: "llm_stop_1", label: "收到 finish_reason='tool_calls'", msg: '大模型返回: {content: null, tool_calls: [{name: "get_weather", args: {city: "北京"}}]}' },
+  { phase: "push_assistant", label: "push assistant 消息", msg: '→ messages 新增: {role: "assistant", tool_calls: [...]}' },
+  { phase: "exec_tool", label: "执行工具", msg: "→ 调用 get_weather({city: '北京'}) → {temperature: 28, condition: '晴'}" },
+  { phase: "push_tool", label: "push tool 消息", msg: '→ messages 新增: {role: "tool", tool_call_id: "...", content: \'{"temperature":28,"condition":"晴"}\'}' },
+  { phase: "llm_call_2", label: "第 2 轮 LLM 调用", msg: "再次发送 messages=[system, user, assistant(tool_calls), tool(结果)] 给大模型" },
+  { phase: "llm_stop_2", label: "收到 finish_reason='stop'", msg: '大模型回答: "北京今天 28°C，晴，适合外出 ☀️"' },
+  { phase: "done", label: "🎉 结束", msg: "success: true, content: '北京今天 28°C，晴，适合外出 ☀️'" },
+];
+
+let stepIdx = 0;
+const output = document.getElementById("react-output");
+
+function reactStep() {
+  if (stepIdx >= steps.length) return;
+
+  const s = steps[stepIdx];
+  const labelLine = `<span style="color:#facc15;">┃ ${s.label}</span>\n`;
+  const msgLine = `<span class="dim">┃   ${s.msg}</span>\n`;
+  const divider = `<span class="dim">┃</span>\n`;
+
+  if (stepIdx === 0) output.innerHTML = "";
+  output.innerHTML += labelLine + msgLine + divider;
+  output.scrollTop = output.scrollHeight;
+
+  stepIdx++;
+}
+
+function reactReset() {
+  stepIdx = 0;
+  output.innerHTML = '<span class="dim">点击 "执行一步" 按钮开始模拟 ReAct 循环</span>\n';
+}
+
+// --- Quiz ---
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+  options.forEach(o => { if (o.dataset.correct === "true") o.classList.add("correct"); });
+
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

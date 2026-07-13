@@ -36,27 +36,28 @@ async function basicStream() {
     const delta = chunk.delta;
 
     // 实时打印增量内容
+    if (delta.reasoning_content) {
+      streamedContent += delta.reasoning_content;
+      process.stdout.write(delta.reasoning_content);
+    }
+    process.stdout.write("\n");
+
+    // 实时打印增量内容
     if (delta.content) {
       streamedContent += delta.content;
       process.stdout.write(delta.content);
     }
 
     // 打印最终聚合结果
-    if (chunk.accumulated) {
+    if (chunk.fullResponse) {
       printSection("聚合结果");
       printKV("chunks 总数", chunkCount);
       printKV("streamed_content", streamedContent);
-      printKV("accumulated.content", chunk.accumulated.content);
-      printKV("finish_reason", chunk.accumulated.finish_reason);
-      if (chunk.accumulated.usage) {
-        printKV(
-          "usage",
-          `prompt=${chunk.accumulated.usage.prompt_tokens} completion=${chunk.accumulated.usage.completion_tokens} total=${chunk.accumulated.usage.total_tokens}`,
-        );
-      }
+      printKV("accumulated.content", chunk.fullResponse.content);
+      printKV("finish_reason", chunk.fullResponse.finish_reason);
 
       // 验证聚合内容与流式拼接内容一致
-      if (streamedContent !== chunk.accumulated.content) {
+      if (streamedContent !== chunk.fullResponse.content) {
         console.log("\n⚠️  WARNING: streamed content ≠ accumulated content!");
       } else {
         console.log("\n✅ streamed content 与 accumulated content 一致");
@@ -83,13 +84,6 @@ async function longStream() {
     chunkCount++;
     if (chunk.delta.content) {
       process.stdout.write(chunk.delta.content);
-    }
-    if (chunk.accumulated) {
-      printSection("统计");
-      printKV("chunks 总数", chunkCount);
-      if (chunk.accumulated.usage) {
-        printKV("total_tokens", chunk.accumulated.usage.total_tokens);
-      }
     }
   }
 

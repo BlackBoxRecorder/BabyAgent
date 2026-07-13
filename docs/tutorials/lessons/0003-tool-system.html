@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 3: 工具系统 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 3: 工具系统 — Agent 的双手</h1>
+
+<div class="meta">
+  <span>📅 课程 3 / 6</span>
+  <span>⏱ 12 分钟</span>
+  <span>📂 <code>src/tools/interface/</code> + <code>src/tools/bash/tool.ts</code> + <code>src/tools/fs/tool.ts</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>理解 <code>Tool</code> 接口的定义、JSON Schema 参数格式、工具注册表的工作方式，以及 bash 和 fs 工具的具体实现。
+</div>
+
+<h2>1. 工具系统的三要素</h2>
+
+<p>babyAgent 的工具系统由三层组成：</p>
+
+<pre><code>┌──────────────────────────────────────────────────┐
+│  1. Tool 接口（契约）       src/tools/interface/ │
+│  2. ToolRegistry（注册表）  src/tools/interface/ │
+│  3. 具体实现                src/tools/bash/      │
+│                            src/tools/fs/         │
+└──────────────────────────────────────────────────┘</code></pre>
+
+<h2>2. Tool 接口：一切工具的契约</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/interface/index.ts"><code>src/tools/interface/index.ts</code></a>——所有工具必须遵守这个接口：</p>
+
+<pre><code><span class="code-loc">index.ts:45-54</span>
+export interface Tool {
+  name: string;                    // 唯一标识，LLM 通过 name 引用
+  description: string;             // LLM 看的描述，决定何时使用
+  parameters: JsonSchema;          // 参数定义（JSON Schema）
+  execute: (params) => Promise&lt;ToolResult&gt;;  // 执行函数
+}</code></pre>
+
+<div class="callout callout-tip">
+  <strong>💡 为什么叫"契约"？</strong> 任何工具只要实现这 4 个字段，就能被注册表接纳、被 LLM 发现、被 Agent 调用。这就是<strong>策略模式</strong>——添加新工具不需要改 agent 的代码。
+</div>
+
+<h3>2.1 parameters: JSON Schema</h3>
+
+<p>工具的 <code>parameters</code> 使用 JSON Schema 格式，告诉 LLM：</p>
+<ul>
+  <li>这个工具有哪些参数</li>
+  <li>每个参数是什么类型（string / number / boolean / array）</li>
+  <li>哪个参数是必填的</li>
+  <li>每个参数的用途（description 字段）</li>
+</ul>
+
+<p>以 bash 工具为例：</p>
+
+<pre><code><span class="code-loc">bash/tool.ts:27-40</span>
+parameters: {
+  type: "object",
+  properties: {
+    command: {
+      type: "string",
+      description: "The bash command to execute",
+    },
+    timeout: {
+      type: "number",
+      description: "Optional timeout in seconds for the command",
+    },
+  },
+  required: ["command"],           // command 是必填的
+}</code></pre>
+
+<h3>2.2 格式转换：给 LLM 看的样子</h3>
+
+<p>当 Tool 传给 LLM 时，需要包装成 API 认可的格式：</p>
+
+<pre><code><span class="code-loc">index.ts:78-98</span>
+export interface LLMFunctionDef {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: JsonSchema;
+  };
+}
+
+// Tool → LLMFunctionDef 的转换：
+export function formatToolForLLM(tool: Tool): LLMFunctionDef {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  };
+}</code></pre>
+
+<p>这就是为什么第 1 课中 <code>chatStream()</code> 的 <code>tools</code> 参数类型是 <code>LLMFunctionDef[]</code>。转换后发给 API 的 JSON 大致是：</p>
+
+<pre><code>{
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "bash",
+      "description": "Execute bash commands in the terminal...",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string", "description": "..." },
+          "timeout": { "type": "number", "description": "..." }
+        },
+        "required": ["command"]
+      }
+    }
+  }]
+}</code></pre>
+
+<h2>3. ToolRegistry：工具的中枢</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/interface/registry.ts"><code>src/tools/interface/registry.ts</code></a>：</p>
+
+<pre><code><span class="code-loc">registry.ts:8-32</span>
+export class DefaultToolRegistry implements ToolRegistry {
+  private tools: Map&lt;string, Tool&gt; = new Map();
+
+  register(tool: Tool): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`Tool "${tool.name}" is already registered`);
+    }
+    this.tools.set(tool.name, tool);
+  }
+
+  getTool(name: string): Tool | undefined {
+    return this.tools.get(name);
+  }
+
+  getAllTools(): Tool[] { return Array.from(this.tools.values()); }
+
+  getToolsForLLM(): LLMFunctionDef[] {
+    return this.getAllTools().map(formatToolForLLM);
+  }
+}</code></pre>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>Map 存储</strong>：O(1) 查找，适合 <code>agent.ts</code> 中频繁的 <code>getTool(name)</code></li>
+    <li><strong>防重复注册</strong>：同名的工具不能注册两次，提前发现配置错误</li>
+    <li><strong>一键格式转换</strong>：<code>getToolsForLLM()</code> 批量转成 LLM 需要的格式，在 Agent 构造时调用一次</li>
+  </ul>
+</div>
+
+<h2>4. 具体工具：bash</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/bash/tool.ts"><code>src/tools/bash/tool.ts</code></a>：</p>
+
+<pre><code><span class="code-loc">bash/tool.ts:22-68</span>
+name: "bash",
+description: "Execute bash commands in the terminal...",
+parameters: {
+  type: "object",
+  properties: {
+    command: { type: "string", description: "The bash command to execute" },
+    timeout: { type: "number", description: "Optional timeout in seconds" },
+  },
+  required: ["command"],
+},
+async execute(params) {
+  const result = await bashTool({ command: params.command, timeout: params.timeout });
+  return {
+    success: exitCode === 0,
+    output: outputText,
+    error: exitCode !== 0 ? `Exit code: ${exitCode}` : undefined,
+    metadata: result.details,
+  };
+}</code></pre>
+
+<p>从 execute 的返回可以看出：</p>
+<ul>
+  <li><strong>exit code === 0</strong> → success</li>
+  <li><strong>exit code !== 0</strong> → 业务错误，把退出码当成 error 返回</li>
+  <li><strong>工具异常</strong> → try-catch 兜底，error 字段保留消息</li>
+</ul>
+
+<h2>5. 具体工具：fs（Read/Write/Edit/Ls/Grep/Find）</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/fs/tool.ts"><code>src/tools/fs/tool.ts</code></a>，包含 6 个文件系统工具：</p>
+
+<div class="sim-panel">
+  <h3>FS 工具一览</h3>
+  <div style="font-family:var(--mono);font-size:0.85rem;line-height:2;">
+    <span style="color:var(--accent);">read</span>    — 读取文件内容<br>
+    <span style="color:var(--accent);">write</span>   — 写入/创建文件<br>
+    <span style="color:var(--accent);">edit</span>    — 精确替换文件中的文本（SearchReplace）<br>
+    <span style="color:var(--accent);">ls</span>      — 列出目录内容<br>
+    <span style="color:var(--accent);">grep</span>    — 搜索文件内容（基于 ripgrep）<br>
+    <span style="color:var(--accent);">find</span>    — 按 glob 模式查找文件（基于 fd）<br>
+  </div>
+</div>
+
+<p>每个 fs 工具都通过 <code>wrapToolDefinition()</code> 函数包装：</p>
+
+<pre><code><span class="code-loc">fs/tool.ts:84-111</span>
+function wrapToolDefinition(toolDef: ToolDefinition): Tool {
+  return {
+    name: toolDef.name,
+    description: toolDef.description,
+    parameters: toolDef.parameters,
+    async execute(params) {
+      const result = await toolDef.execute(params);
+      const outputText = result.content
+        .map((item) => item.text ?? item.data ?? "")
+        .join("\n");
+      return { success: true, output: outputText };
+    },
+  };
+}</code></pre>
+
+<h2>6. 完整链路回顾</h2>
+
+<p>现在我们可以看到从第 1 课到第 3 课的完整数据流：</p>
+
+<div class="sim-panel">
+  <h3>&nbsp;Agent 工具调用完整链路</h3>
+  <div style="font-family:var(--mono);font-size:0.85rem;line-height:2.2;">
+    <span style="color:var(--muted);">① 初始化</span> Agent 构造时 → ToolRegistry.register(bash, read, write, ...)<br>
+    <span style="color:var(--muted);">② 格式转换</span> getToolsForLLM() → LLMFunctionDef[] → 放入 API 请求的 tools 参数<br>
+    <span style="color:var(--muted);">③ LLM 决策</span> 大模型选择工具 bash({command: "ls -la"})，返回 tool_calls<br>
+    <span style="color:var(--muted);">④ 查找执行</span> agent.ts 中 getTool("bash") → tool.execute({command: "ls -la"})<br>
+    <span style="color:var(--muted);">⑤ 结果返回</span> ToolResult → 转为 tool 消息 → 追加到 messages → 下一轮 LLM 调用
+  </div>
+</div>
+
+<h2>7. 🧪 动手思考</h2>
+
+<p>如果你要添加一个新工具（比如 <code>search_web</code>），需要做哪些事？</p>
+
+<ol>
+  <li>创建一个新文件 <code>src/tools/web/tool.ts</code>（或类似的）</li>
+  <li>实现 <code>Tool</code> 接口：name、description、parameters、execute</li>
+  <li>在 Agent 构造时调用 <code>toolRegistry.register(searchWebTool)</code></li>
+  <li>注册后，LLM 就能看到并调用它了！</li>
+</ol>
+
+<div class="callout callout-tip">
+  <strong>⚡ 这就是策略模式的力量：</strong> 添加新工具 = 实现一个接口 + 注册一次。Agent 核心逻辑（ReAct 循环）不需要任何修改。
+</div>
+
+<h2>8. ✅ 检测理解</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. Tool 接口的 4 个必填字段是什么？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">A. name, version, params, run</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">B. name, description, parameters, execute</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">C. name, description, input, output</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. id, type, schema, handler</label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. 为什么工具注册表不允许同名工具重复注册？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. 因为 Map 自动覆盖旧值</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">B. 为了提前发现命名冲突，避免 LLM 调用时产生歧义</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">C. 因为 API 限制只能传一个同名工具</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. 为了节省内存</label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. ToolRegistry.getToolsForLLM() 的作用是什么？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">A. 列出所有已注册的工具名</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">B. 将注册的工具批量转为 LLM API 所需的 LLMFunctionDef 格式</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">C. 直接调用所有工具执行一遍</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">D. 检查工具参数是否合法</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<h2>9. 📖 延伸阅读</h2>
+
+<ul>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/interface/index.ts"><code>src/tools/interface/index.ts</code></a> — Tool 接口和 JsonSchema 类型定义</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/interface/registry.ts"><code>src/tools/interface/registry.ts</code></a> — DefaultToolRegistry 实现</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/bash/tool.ts"><code>src/tools/bash/tool.ts</code></a> — bash 工具实现</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/tools/fs/tool.ts"><code>src/tools/fs/tool.ts</code></a> — 6 个文件系统工具</li>
+  <li><a href="./0002-react-loop.html">Lesson 2: ReAct 循环</a> — agent.ts 中如何使用 ToolRegistry</li>
+  <li><a href="./lessons/0004-mcp-integration.html">Lesson 4: MCP 集成</a> — 外部工具通过 MCP 标准协议接入</li>
+</ul>
+
+<div class="callout">
+  <strong>💬 有疑问？</strong> 理解了工具系统后，第 4 课将介绍 MCP——如何让 agent 通过标准协议连接外部工具服务器。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+  options.forEach(o => { if (o.dataset.correct === "true") o.classList.add("correct"); });
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

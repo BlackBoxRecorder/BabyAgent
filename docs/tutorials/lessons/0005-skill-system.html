@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 5: Skill 系统 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+.skill-md-preview {
+  background: #1a1a2e;
+  color: #e5e7eb;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  padding: 1rem;
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+.skill-md-preview .fm { color: #facc15; }
+.skill-md-preview .dim { color: #6b7280; }
+.skill-md-preview .hl { color: #60a5fa; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 5: Skill 系统 — Agent 的领域知识注入</h1>
+
+<div class="meta">
+  <span>📅 课程 5 / 6</span>
+  <span>⏱ 13 分钟</span>
+  <span>📂 <code>src/skills.ts</code> + <code>.qoder/skills/</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>理解 Skill 系统如何通过 markdown 文件给 agent 注入领域知识和行为指令——不写代码，只写 prompt。
+</div>
+
+<h2>1. 什么是 Skill？</h2>
+
+<p>一个 Skill 就是一个包含 <strong>YAML frontmatter + Markdown 指令</strong> 的 <code>SKILL.md</code> 文件，放在 <code>skills/</code> 目录的子目录中。它告诉 LLM 如何完成特定任务。</p>
+
+<p>Skill 系统的核心流程：</p>
+
+<pre><code>SKILL.md（文件）→ 读取 description → 拼入系统提示词
+                        ↓
+            LLM 发现匹配的任务 → 读取完整 SKILL.md
+                        ↓
+            SKILL.md 内容成为对话消息 → LLM 按指令执行</code></pre>
+
+<div class="callout callout-tip">
+  <strong>💡 项目当前有 20+ 个 skill！</strong> 查看 <code>.qoder/skills/</code> 目录，包含了 <code>teach</code>、<code>tdd</code>、<code>code-review</code>、<code>prototype</code> 等。
+</div>
+
+<h2>2. SKILL.md 文件格式</h2>
+
+<p>一个典型的 SKILL.md 文件：</p>
+
+<div class="skill-md-preview"><span class="fm">---</span>
+<span class="hl">name</span>: <span class="dim">teach</span>
+<span class="hl">description</span>: <span class="dim">Teach the user a new skill or concept...</span>
+<span class="hl">disable-model-invocation</span>: <span class="dim">true</span>
+<span class="fm">---</span>
+<span class="dim">
+The user has asked you to teach them something...</span></div>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--code-bg);">
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">字段</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">必填</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">说明</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);"><code>name</code></td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">否</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">Skill 名，默认用目录名</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);"><code>description</code></td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">是</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">LLM 看到的一句话描述，决定何时激活</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);"><code>disable-model-invocation</code></td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">否</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">为 true 时不出现在系统提示词中，仅通过 <code>/skill:name</code> 命令触发</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. SkillManager 源码解剖</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/skills.ts"><code>src/skills.ts</code></a>——这是 Skill 系统的核心。</p>
+
+<h3>3.1 发现与加载</h3>
+
+<pre><code><span class="code-loc">skills.ts:55-78</span>
+async loadSkills() {
+  // 1. 扫用户级目录 ~/.babyAgent/skills/
+  const userSkills = await this._scanDirectory(this.userSkillsDir, "user");
+
+  // 2. 扫项目级目录 cwd/.babyAgent/skills/
+  const projectSkills = await this._scanDirectory(this.projectSkillsDir, "project");
+
+  // 3. 同名时项目级覆盖用户级
+  for (const ps of projectSkills) {
+    const idx = all.findIndex(s => s.name === ps.name);
+    if (idx !== -1) all[idx] = ps;  // 覆盖
+    else all.push(ps);
+  }
+}</code></pre>
+
+<p>扫描一个目录的逻辑：</p>
+
+<pre><code><span class="code-loc">skills.ts:131-188</span>
+private async _scanDirectory(dirPath, source) {
+  for (const entryName of entries) {
+    // 跳过隐藏目录和 node_modules
+    // 必须是目录
+    // 目录内必须有 SKILL.md
+    // 解析 YAML frontmatter，提取 description
+    // description 为空则跳过并警告
+  }
+}</code></pre>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>双目录搜索</strong>：用户级（全局可用）和项目级（项目专属），同名项目级覆盖——项目可以 override 全局 skill</li>
+    <li><strong>静默容错</strong>：目录不存在直接返回空数组，不报错</li>
+    <li><strong>无外部依赖</strong>：YAML frontmatter 是手写解析的，不需要引入 yaml 库</li>
+  </ul>
+</div>
+
+<h3>3.2 组装到系统提示词</h3>
+
+<pre><code><span class="code-loc">skills.ts:94-116</span>
+formatSkillsForSystemPrompt(): string {
+  // 只包含 disableModelInvocation !== true 的 skill
+  const visible = this.skills.filter(s => !s.disableModelInvocation);
+
+  return [
+    "The following skills provide specialized instructions for specific tasks.",
+    "Read the full skill file when the task matches its description.",
+    "",
+    "&lt;available_skills&gt;",
+    for (const skill of visible) {
+      `  &lt;skill&gt;`,
+      `    &lt;name&gt;${skill.name}&lt;/name&gt;`,
+      `    &lt;description&gt;${skill.description}&lt;/description&gt;`,
+      `    &lt;location&gt;${skill.location}&lt;/location&gt;`,
+      `  &lt;/skill&gt;`,
+    },
+    "&lt;/available_skills&gt;",
+  ].join("\n");
+}</code></pre>
+
+<p>最终注入系统提示词的效果：</p>
+
+<pre><code>&lt;available_skills&gt;
+  &lt;skill&gt;
+    &lt;name&gt;code-review&lt;/name&gt;
+    &lt;description&gt;Review the changes since a fixed point...&lt;/description&gt;
+    &lt;location&gt;/path/to/skills/code-review/SKILL.md&lt;/location&gt;
+  &lt;/skill&gt;
+  &lt;skill&gt;
+    &lt;name&gt;tdd&lt;/name&gt;
+    &lt;description&gt;Test-driven development...&lt;/description&gt;
+    &lt;location&gt;/path/to/skills/tdd/SKILL.md&lt;/location&gt;
+  &lt;/skill&gt;
+  ...
+&lt;/available_skills&gt;</code></pre>
+
+<h3>3.3 按需读取全量内容</h3>
+
+<pre><code><span class="code-loc">skills.ts:119-125</span>
+async readSkillContent(name: string): Promise&lt;string&gt; {
+  const skill = this.getSkill(name);
+  if (!skill) throw new Error(`Skill "${name}" not found.`);
+  return fs.readFile(skill.location, "utf-8");
+}</code></pre>
+
+<p>注意：description 是预加载的（扫描时解析），<strong>正文是 lazy 加载的</strong>——只在 LLM 决定使用某个 skill 时才读取完整文件。</p>
+
+<h2>4. Skill 在对话中的生命周期</h2>
+
+<div class="sim-panel">
+  <h3>&nbsp;一次 Skill 激活的完整流程</h3>
+  <div style="font-family:var(--mono);font-size:0.85rem;line-height:2.2;">
+    <span style="color:var(--muted);">① 启动</span> SkillManager.loadSkills() → 扫描所有 SKILL.md → 提取 description<br>
+    <span style="color:var(--muted);">② 拼装</span> formatSkillsForSystemPrompt() → XML 片段 → 加入系统提示词<br>
+    <span style="color:var(--muted);">③ 对话</span> LLM 看到 &lt;available_skills&gt;，发现 "tdd" 匹配用户请求<br>
+    <span style="color:var(--muted);">④ 读取</span> LLM 使用 read 工具 → readSkillContent("tdd") → 完整 SKILL.md 内容<br>
+    <span style="color:var(--muted);">⑤ 注入</span> SKILL.md 内容作为消息加入对话 → LLM 按 skill 指令执行<br>
+    <span style="color:var(--muted);">⑥ 执行</span> LLM 可能输出回答或 tool_calls → 进入 ReAct 循环（第 2 课）
+  </div>
+</div>
+
+<h2>5. Skill vs Tool</h2>
+
+<p>很多初学者容易混淆 Skill 和 Tool，它们的区别非常明确：</p>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--code-bg);">
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">维度</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">Tool（工具）</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">Skill（技能）</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">本质</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">可执行代码</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">文本指令（prompt）</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">注册方式</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">toolRegistry.register()</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">放在 skills/ 目录即可</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">LLM 感知方式</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">通过 tools API 参数</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">嵌入系统提示词</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">作用时机</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">LLM 返回 tool_calls 时</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">贯穿整个对话（指导 LLM 行为）</td>
+    </tr>
+    <tr>
+      <td style="padding:0.5rem;border:1px solid var(--border);">扩展方式</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">写 TypeScript 代码</td>
+      <td style="padding:0.5rem;border:1px solid var(--border);">写 Markdown 文件</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>6. disable-model-invocation 的作用</h2>
+
+<p>有些 skill 不打算让 LLM 自动发现（比如 <code>teach</code>）。它们设置 <code>disable-model-invocation: true</code>：</p>
+
+<pre><code><span class="code-loc">skills.ts:94-96</span>
+// ⭐ 过滤掉 disableModelInvocation 的 skill
+const visible = this.skills.filter(s => !s.disableModelInvocation);</code></pre>
+
+<p>这类 skill 不会出现在系统提示词的 <code>&lt;available_skills&gt;</code> 中，LLM 不知道它们的存在。它们只能通过 <strong>slash 命令</strong>（如 <code>/teach</code>、<code>/code-review</code>）由用户主动触发。</p>
+
+<div class="callout callout-tip">
+  <strong>💡 两种 skill 场景：</strong><br>
+  - <strong>自动 skill</strong>（disableModelInvocation: false）→ LLM 自动判断何时使用<br>
+  - <strong>命令 skill</strong>（disableModelInvocation: true）→ 用户通过 /command 主动调用
+</div>
+
+<h2>7. 从全局看 Skill 的位置</h2>
+
+<p>现在让我们看看 Skill 系统在完整架构中的位置：</p>
+
+<pre><code>┌───────────────────────────────────────────────────┐
+│              系统提示词（System Prompt）              │
+│  ├─ 基础行为指令（来自 ~/.babyAgent/system_prompt.md）│
+│  ├─ 可用工具列表（来自 ToolRegistry）                 │
+│  └─ ⭐ 可用技能列表（来自 SkillManager） ← 你在这里   │
+├───────────────────────────────────────────────────┤
+│             LLM 根据提示词决定下一步行为               │
+│  ├─ 输出普通文本回答 → finish_reason: stop           │
+│  ├─ 调用工具 → finish_reason: tool_calls             │
+│  └─ 读取 SKILL.md → 按 skill 指令执行                │
+└───────────────────────────────────────────────────┘</code></pre>
+
+<h2>8. ✅ 检测理解</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. Skill 和 Tool 最主要的区别是什么？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">A. Skill 是外部工具，Tool 是内置工具</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">B. Skill 是文本指令（prompt），Tool 是可执行代码</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">C. Skill 是 TypeScript 写的，Tool 是 JSON 定义的</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. 没有区别，只是叫法不同</label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. loadSkills() 发现同名 skill 时怎么处理？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. 两个都保留，LLM 自己选</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">B. 抛异常提示重名</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">C. 项目级 skill 覆盖用户级（按名覆盖）</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. 用户级优先</label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. formatSkillsForSystemPrompt() 会过滤掉什么？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">A. disableModelInvocation 为 true 的 skill</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">B. description 为空的 skill</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">C. 用户级的 skill</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">D. 缺少 name 字段的 skill</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<h2>9. 📖 延伸阅读</h2>
+
+<ul>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/skills.ts"><code>src/skills.ts</code></a> — SkillManager 完整源码</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/.qoder/skills"><code>.qoder/skills/</code></a> — 项目内置的所有 skill 目录</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/.qoder/skills/teach/SKILL.md"><code>teach/SKILL.md</code></a> — 你正在学习的 teach skill 的 SKILL.md</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/llm/prompt.ts"><code>src/llm/prompt.ts</code></a> — 系统提示词加载（Skill 注入的最终位置）</li>
+  <li><a href="./0004-mcp-integration.html">Lesson 4: MCP 集成</a> — 外部工具扩展能力</li>
+  <li><a href="./lessons/0006-coordinator.html">Lesson 6: 协调层</a> — 最后将一切串起来的 Coordinator</li>
+</ul>
+
+<div class="callout">
+  <strong>💬 有疑问？</strong> 最后一课将介绍 Coordinator——如何将 LLM 客户端、Agent、ToolRegistry、SkillManager、SessionManager 全部协调起来，构成完整的 babyAgent。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+  options.forEach(o => { if (o.dataset.correct === "true") o.classList.add("correct"); });
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

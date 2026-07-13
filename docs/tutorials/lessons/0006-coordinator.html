@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 6: 协调层 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+.arch-box {
+  background: #1a1a2e;
+  color: #e5e7eb;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--radius);
+  line-height: 1.8;
+  margin-bottom: 0.75rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+.arch-box .hl { color: #60a5fa; font-weight: bold; }
+.arch-box .fn { color: #f472b6; }
+.arch-box .dim { color: #6b7280; }
+.arch-box .tag { color: #facc15; }
+.arch-box .arrow { color: #34d399; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 6: 协调层 — 把一切串起来</h1>
+
+<div class="meta">
+  <span>📅 课程 6 / 6</span>
+  <span>⏱ 16 分钟</span>
+  <span>📂 <code>src/coordinator.ts</code> + <code>src/cli/app-factory.ts</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>最后一课！理解 Coordinator 和 AppFactory 如何把前面 5 课的所有模块组装成一个完整的、可运行的 babyAgent 系统——从终端输入到 LLM 响应，再到持久化存储。
+</div>
+
+<h2>1. 课程总览：你已经学了什么</h2>
+
+<p>在最后的合体一课之前，先回顾一下前 5 课构建的积木：</p>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:0.9rem;">
+  <thead>
+    <tr style="background:var(--code-bg);">
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">#</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">模块</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">核心能力</th>
+      <th style="padding:0.5rem;border:1px solid var(--border);text-align:left;">源码</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>SSE 流式解析</td><td>解析 LLM 的 data: 流，输出 chunk</td><td><code>src/llm/llm.ts</code></td></tr>
+    <tr><td>2</td><td>ReAct 循环</td><td>推理 ↔ 执行的 while 循环</td><td><code>src/agent.ts</code></td></tr>
+    <tr><td>3</td><td>工具系统</td><td>Tool 接口 + ToolRegistry</td><td><code>src/tools/</code></td></tr>
+    <tr><td>4</td><td>MCP 集成</td><td>外部工具服务器发现与适配</td><td><code>src/mcp/</code></td></tr>
+    <tr><td>5</td><td>Skill 系统</td><td>从 SKILL.md 注入领域知识</td><td><code>src/skills.ts</code></td></tr>
+    <tr><td style="background:#fef3c7;font-weight:bold;">6</td><td style="background:#fef3c7;font-weight:bold;">协调层</td><td style="background:#fef3c7;">全部组装 + 会话管理 + 持久化</td><td style="background:#fef3c7;"><code>src/coordinator.ts</code></td></tr>
+  </tbody>
+</table>
+
+<h2>2. Coordinator：系统的调度中心</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/coordinator.ts"><code>src/coordinator.ts</code></a>——这是整个 babyAgent 的大脑。它的定位：</p>
+
+<div class="arch-box"><span class="hl">  ┌──────────┐    ┌──────────┐    ┌─────────────┐    ┌───────────┐</span>
+<span class="hl">  │  CLI/TUI  │───→│Coordinator│───→│   Agent     │───→│  ChatClient│</span>
+<span class="hl">  │ (显示层)  │    │ (调度层)  │    │ (对话逻辑)  │    │ (LLM API) │</span>
+<span class="hl">  └──────────┘    └────┬─────┘    └──────┬──────┘    └───────────┘</span>
+<span class="hl">                      │                  │</span>
+<span class="hl">                      ▼                  ▼</span>
+<span class="hl">               ┌──────────────┐  ┌──────────────┐</span>
+<span class="hl">               │SessionManager│  │  ToolRegistry │</span>
+<span class="hl">               │ (持久化层)    │  │  (工具调度)    │</span>
+<span class="hl">               └──────────────┘  └──────┬───────┘</span>
+<span class="hl">                                        │</span>
+<span class="hl">                          ┌─────────────┼─────────────┐</span>
+<span class="hl">                          ▼             ▼             ▼</span>
+<span class="hl">                    ┌──────────┐ ┌───────────┐ ┌────────────┐</span>
+<span class="hl">                    │ Bash 工具 │ │ FS 工具集  │ │ MCP 工具集  │</span>
+<span class="hl">                    │(src/tools)│ │(src/tools) │ │(src/mcp/)  │</span>
+<span class="hl">                    └──────────┘ └───────────┘ └────────────┘</span></div>
+
+<p>Coordinator 的核心职责：</p>
+<ul>
+  <li><strong>会话生命周期</strong>：自动创建 session、恢复历史、切换模型</li>
+  <li><strong>单次对话（Turn）执行</strong>：编排用户输入 → Agent 执行 → 流式输出 → 持久化</li>
+  <li><strong>状态追踪</strong>：累加每次 turn 的 token 用量和费用</li>
+  <li><strong>错误恢复</strong>：Agent 崩溃后安全保存错误现场，恢复消息历史</li>
+</ul>
+
+<h2>3. AppFactory：一切组装的枢纽</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/cli/app-factory.ts"><code>src/cli/app-factory.ts</code></a>——这是所有模块的「接线板」：</p>
+
+<pre><code><span class="code-loc">app-factory.ts:53-161</span>
+export async function createApp() {
+  // ① 模型配置
+  const modelConfig = await loadModelConfig();
+  const allModels = getAllModels(modelConfig);
+
+  // ② 内置工具
+  const bashTool = createBashToolAsTool(cwd);
+  const fsTools  = createAllFsTools(cwd);
+
+  // ③ MCP 工具（来自外部服务器）
+  const mcpManager = new McpManager();
+  const mcpTools   = await mcpManager.loadAllTools();
+
+  // ④ 全部工具汇总
+  const allTools = [bashTool, ...fsTools, ...mcpTools];
+
+  // ⑤ Skill 发现
+  const skillManager = new SkillManager();
+  await skillManager.loadSkills();
+
+  // ⑥ 系统提示词 + Skill 注入
+  let systemPrompt = await loadSystemPrompt();
+  systemPrompt += "\n\n" + skillManager.formatSkillsForSystemPrompt();
+
+  // ⑦ 组装 Agent
+  const agent = new Agent({
+    llm:    new ChatClient(allModels, billingCalculator),
+    tools:  allTools,
+    systemPrompt,
+  });
+
+  // ⑧ 组装 Coordinator
+  const coordinator = new ConversationCoordinator({
+    agent,
+    sessionManager: new SessionManager(),
+  });
+
+  return { coordinator, tools, mcpStatuses, models, ... };
+}</code></pre>
+
+<p>这是你第一次看到整个系统的组装现场。注意 <strong>8 个步骤的顺序</strong>——每个组件依赖前序步骤产出的结果。</p>
+
+<h2>4. executeTurn()：一次对话的完整旅程</h2>
+
+<p>这是 Coordinator 最重要的方法——让我们追踪一条用户输入 <code>"帮我查一下 CPU 温度"</code> 的完整调用链：</p>
+
+<div class="sim-panel">
+  <h3>&nbsp;executeTurn("帮我查一下 CPU 温度") 全链路追踪</h3>
+  <div style="font-family:var(--mono);font-size:0.82rem;line-height:2.0;">
+    <span style="color:var(--muted);">①</span> 用户输入 → CLI/TUI 调用 <span style="color:#f472b6;">coordinator.executeTurn("帮我查一下 CPU 温度")</span><br>
+    <span style="color:var(--muted);">②</span> <span style="color:#60a5fa;">[无 session]</span> → 自动创建会话 → yield { type: "session_created" }<br>
+    <span style="color:var(--muted);">③</span> 组装消息: [system prompt + skill 列表, ..., user: "帮我查一下 CPU 温度"]<br>
+    <span style="color:var(--muted);">④</span> 调用 <span style="color:#f472b6;">agent.runWithMessages(messages)</span> (第 2 课：ReAct 循环)<br>
+    <span style="color:var(--muted);">⑤</span> → LLM 返回 <span style="color:#facc15;">chunk</span> 流 (第 1 课：SSE 解析)<br>
+    <span style="color:var(--muted);">⑥</span> → LLM 返回 <span style="color:#facc15;">tool_calls</span> → agent 查 ToolRegistry（第 3 课）<br>
+    <span style="color:var(--muted);">⑦</span> → 可能是 MCP 工具（第 4 课），通过 transport.callTool() 执行<br>
+    <span style="color:var(--muted);">⑧</span> → 工具结果回到 LLM → LLM 生成最终回答 → finish_reason: "stop"<br>
+    <span style="color:var(--muted);">⑨</span> yield { type: "done", result } ← <span style="color:#facc15;">所有流式事件向外吐出</span><br>
+    <span style="color:var(--muted);">⑩</span> 持久化: sessionManager.appendTurn() → <span style="color:#34d399;">.jsonl + .meta.json</span>
+  </div>
+</div>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计亮点：</strong>
+  <ul>
+    <li><strong>流式事件转送</strong>：Agent 的 <code>AgentStreamEvent</code>（chunk / tool_result / done）被 Coordinator 原样 yield 出去，CLI/TUI 只需要消费</li>
+    <li><strong>session_created 事件</strong>：UI 层收到后刷新 session 列表</li>
+    <li><strong>会话自动创建</strong>：用户第一条消息时自动创建 session，对用户完全透明</li>
+  </ul>
+</div>
+
+<h2>5. 错误处理的艺术</h2>
+
+<p>Agent 在复杂的工具调用中可能崩溃。Coordinator 有完善的保护机制：</p>
+
+<pre><code><span class="code-loc">coordinator.ts:219-271</span>
+// Agent 崩溃后的错误处理（重点！）
+try {
+  for await (const event of this.agent.runWithMessages(turnInput)) {
+    ...
+  }
+} catch (agentErr) {
+  // ① 保存错误现场到文件（防止 meta.json 孤儿）
+  await this.sessionManager.appendTurn(this._sessionId, errorTurn);
+
+  // ② 恢复消息历史到执行前状态
+  this.agent.setMessages(
+    this.agent.getMessages().slice(0, messagesBefore)
+  );
+
+  // ③ 向外吐出错误事件
+  yield { type: "agent_error", error: errorMsg };
+}</code></pre>
+
+<p>三点保障：</p>
+<ul>
+  <li><strong>防孤儿文件</strong>：session 已创建但 Agent 崩溃→保存错误 turn，避免只有 meta.json 没有 jsonl</li>
+  <li><strong>消息回滚</strong>：失败后消息历史恢复到执行前，下次对话从干净状态开始</li>
+  <li><strong>流式错误报告</strong>：<code>agent_error</code> 让 UI 层可以显示错误，而不是静默失败</li>
+</ul>
+
+<h2>6. 你构建的完整系统</h2>
+
+<p>6 课学完了，这是你完全理解的 babyAgent 架构：</p>
+
+<div class="arch-box"><span class="tag">┌─────────────────────────────────────────────────────────────────────────┐</span>
+<span class="tag">│                          CLI / TUI 显示层                              │</span>
+<span class="tag">│   消费 TurnEvent 事件：显示 chunk、错误、会话信息                        │</span>
+<span class="tag">└───────────────────────────┬─────────────────────────────────────────────┘</span>
+<span class="tag">                            │</span>
+<span class="fn">  ┌──────────────────────────▼─────────────────────────────────────────┐</span>
+<span class="fn">  │  ConversationCoordinator  ← 调度层（第 6 课）                      │</span>
+<span class="fn">  │  职责：会话管理 / Turn 编排 / 事件转送 / 错误恢复                    │</span>
+<span class="fn">  │  关键方法：executeTurn(), resumeSession(), newSession()            │</span>
+<span class="fn">  └─────────────┬────────────────────────────┬────────────────────────┘</span>
+<span class="fn">                │                            │</span>
+<span class="hl">  ┌─────────────▼──────────┐  ┌─────────────▼──────────────────────┐</span>
+<span class="hl">  │  Agent （第 2 课）      │  │  SessionManager （持久化层）         │</span>
+<span class="hl">  │  ReAct 循环             │  │  读写 .jsonl + .meta.json          │</span>
+<span class="hl">  │  ToolRegistry 调度      │  │  创建/恢复 session                 │</span>
+<span class="hl">  └─────┬───────────────────┘  └──────────────────────────────────┘</span>
+<span class="hl">        │</span>
+<span class="hl">  ┌─────▼───────────────────┐</span>
+<span class="hl">  │  LLM Client（第 1 课）   │</span>
+<span class="hl">  │  SSE 流式解析            │</span>
+<span class="hl">  │  billing 计算            │</span>
+<span class="hl">  └─────┬───────────────────┘</span>
+<span class="hl">        │</span>
+<span class="hl">  ┌─────┴──────────────┬──────────────────┐</span>
+<span class="fn">  │  ToolRegistry       │  SkillManager    │</span>
+<span class="fn">  │  （第 3 课）         │  （第 5 课）      │</span>
+<span class="fn">  ├────┬────┬────┬─────┤  ├────┬────┬──────┤</span>
+<span class="fn">  │bash│ fs │MCP │...  │  │tdd │teach│...  │</span>
+<span class="fn">  └────┴────┼────┴─────┘  └────┴────┴──────┘</span>
+<span class="fn">            │</span>
+<span class="fn">  ┌─────────▼──────────┐</span>
+<span class="fn">  │  MCP 服务器（第 4 课）│</span>
+<span class="fn">  │  stdio/http 传输层   │</span>
+<span class="fn">  └────────────────────┘</span></div>
+
+<h2>7. ✅ 最终检测：6 课联考</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. executeTurn() 中，如果 Agent 在运行时崩溃（抛出异常），Coordinator 会怎么做？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">A. 什么都不做，让用户重试</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">B. 删除整个 session</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">C. 保存错误 turn → 回滚消息历史 → yield agent_error 事件</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. 立即重启 Agent</label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. AppFactory 中，下面哪个是组件组装正确顺序？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. Agent → 模型配置 → 工具 → Coordinator</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">B. 工具 → Agent → 模型配置 → Coordinator</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">C. 模型配置 → 工具 + MCP → Skill → 系统提示词 → Agent → Coordinator</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. 所有组件并行构造</label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. Coordinator 使用什么机制让显示层（CLI/TUI）实时看到 Agent 的流式输出？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">A. 回调函数</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">B. AsyncGenerator yield TurnEvent（chunk / tool_result / done）</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">C. 全局状态变量</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">D. EventEmitter 事件发射</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<div class="quiz" id="quiz-4">
+  <div class="quiz-question">4. 最终挑战：一条消息 "用浏览器打开 google.com" 会经过哪些模块？（选最完整路径）</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q4')">A. CLI → Agent → LLM → Agent → CLI</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q4')">B. CLI → Coordinator → Agent → LLM → ToolRegistry → Bash → CLI</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q4')" data-correct="true">C. CLI → Coordinator → Agent → LLM → Agent(ReAct) → ToolRegistry → MCP(playwright) → Agent → LLM → Agent → Coordinator(持久化) → CLI</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q4')">D. CLI → LLM → 工具 → 返回 CLI</label>
+  </div>
+  <div class="quiz-result" id="q4-result"></div>
+</div>
+
+<h2>8. 🎉 课程总结</h2>
+
+<div class="callout" style="border-color: #34d399; background: linear-gradient(135deg, #064e3b22, #065f4622);">
+  <strong>🎊 你学完了整个 babyAgent 的 6 课系统课程！</strong><br><br>
+  <table style="width:100%;font-size:0.9rem;">
+    <tr><td style="padding:0.25rem 0;"><strong>第 1 课</strong></td><td>从 HTTP SSE 流中实时解析 LLM 输出</td></tr>
+    <tr><td style="padding:0.25rem 0;"><strong>第 2 课</strong></td><td>用 ReAct while 循环实现推理 ↔ 执行交替</td></tr>
+    <tr><td style="padding:0.25rem 0;"><strong>第 3 课</strong></td><td>设计 Tool 接口和注册表，封装所有能力为工具</td></tr>
+    <tr><td style="padding:0.25rem 0;"><strong>第 4 课</strong></td><td>通过 MCP 协议连接外部工具服务器</td></tr>
+    <tr><td style="padding:0.25rem 0;"><strong>第 5 课</strong></td><td>用 SKILL.md 给 agent 注入领域知识</td></tr>
+    <tr><td style="padding:0.25rem 0;"><strong>第 6 课</strong></td><td>用 Coordinator + AppFactory 串联全部模块</td></tr>
+  </table>
+  <br>
+  <strong>核心哲学</strong>：整个体系建立在「分层解耦」之上——接口就是契约。<br>
+  Tool 接口 + AsyncGenerator 流式事件 + SKILL.md 格式 + MCP 协议——每个模块只依赖抽象，不依赖实现。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+  options.forEach(o => { if (o.dataset.correct === "true") o.classList.add("correct"); });
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

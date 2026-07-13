@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 1: SSE 流式解析 — Agent 构建</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<h1>Lesson 1: SSE 流式解析 — LLM API 的大门</h1>
+
+<div class="meta">
+  <span>📅 课程 1 / 6</span>
+  <span>⏱ 12 分钟</span>
+  <span>📂 <code>src/llm/llm.ts</code> + <code>sse.log</code></span>
+</div>
+
+<div class="callout">
+  <strong>🎯 目标：</strong>理解 LLM 如何通过 SSE 协议"流式输出"响应，能读懂 <code>sse.log</code> 中的原始数据，并理解 <code>ChatClient.chatStream()</code> 的解析逻辑。
+</div>
+
+<h2>1. 问题：HTTP 如何传输"文字流"？</h2>
+
+<p>大模型生成一段文本不像数据库查询那样瞬间返回——它需要一个字一个字地"想"出来。如果等全部生成完毕再返回，用户要白等好几秒才能看到第一个字。</p>
+
+<p>解决方案是 <strong>SSE（Server-Sent Events）</strong>：客户端发起一次 HTTP 请求后，服务端保持连接不断开，逐段推送数据。用户可以在大模型还没说完时就看到开头的内容。</p>
+
+<div class="callout callout-tip">
+  <strong>💡 关键概念：</strong>SSE 不是 WebSocket。它是<strong>单向</strong>的（服务端→客户端），基于 HTTP 长连接，格式简单——每一行以 <code>data: </code> 开头。
+</div>
+
+<h2>2. 解剖 SSE 日志</h2>
+
+<p>打开项目中的 <a href="file:///Users/yinnan/data/code/agent/babyAgent/sse.log"><code>sse.log</code></a>，你会看到大模型 GLM-Z1-9B 的一次完整流式输出。让我们逐行分析：</p>
+
+<p>此外，<a href="./sse-stream-parsing.md"><code>docs/tutorials/sse-stream-parsing.md</code></a> 提供了更详细的解析流程图和实现分析，可作为深入参考。</p>
+
+<h3>2.1 第一个 chunk：角色宣告</h3>
+
+<pre><code>data: {"id":"019f3a68f625073d019a83c922d21d14","object":"chat.completion.chunk","created":1783391385,"model":"THUDM/GLM-Z1-9B-0414","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":null}],"system_fingerprint":"","usage":{"prompt_tokens":15,"completion_tokens":0,"total_tokens":15}}</code></pre>
+
+<p>第一个 chunk 通常没有实际内容，只是声明 <code>role: "assistant"</code>，告诉客户端接下来要开始接收模型回复了。</p>
+
+<h3>2.2 推理过程（reasoning_content）</h3>
+
+<pre><code>data: {"id":"019f3a68f625073d019a83c922d21d14","object":"chat.completion.chunk","created":1783391385,"model":"THUDM/GLM-Z1-9B-0414","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"嗯","role":"assistant"},"finish_reason":null}],"system_fingerprint":"","usage":{"prompt_tokens":15,"completion_tokens":1,"total_tokens":16,"completion_tokens_details":{"reasoning_tokens":1}}}</code></pre>
+
+<p>注意 <code>delta.reasoning_content</code> 字段！这是思维链模型的推理过程，逐字输出。用户通常看不到这部分（在 TUI 中它被折叠显示），但它是理解模型"思考过程"的窗口。</p>
+
+<h3>2.3 最终回答（content）</h3>
+
+<p>当推理结束后，<code>reasoning_content</code> 变为 <code>null</code>，<code>content</code> 出现：</p>
+
+<pre><code>data: {"id":"019f3a68f625073d019a83c922d21d14","object":"chat.completion.chunk","created":1783391385,"model":"THUDM/GLM-Z1-9B-0414","choices":[{"index":0,"delta":{"content":"隐","role":"assistant"},"finish_reason":null}],"system_fingerprint":"","usage":{"prompt_tokens":15,"completion_tokens":300,"total_tokens":315,"completion_tokens_details":{"reasoning_tokens":221}}}</code></pre>
+
+<p>每个 chunk 只携带一个字符！这就是"流式"的体现——一个字一个字地推送。</p>
+
+<h3>2.4 结束标记</h3>
+
+<pre><code>data: {"id":"..." ,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}
+<span class="dim">...</span>
+data: [DONE]</code></pre>
+
+<p>最后两个信号：</p>
+<ul>
+  <li><code>finish_reason: "stop"</code> — 模型告诉客户端"我说完了"</li>
+  <li><code>data: [DONE]</code> — SSE 流的终止信号，之后不再有数据</li>
+</ul>
+
+<h2>3. 代码实现：ChatClient.chatStream()</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/llm/llm.ts"><code>src/llm/llm.ts</code></a>，核心方法是 <code>chatStream()</code>。让我们拆解它：</p>
+
+<h3>3.1 发起请求</h3>
+
+<pre><code><span class="code-loc">llm.ts:70-78</span>
+const response = await fetch(`${model.baseUrl}/chat/completions`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${model.apiKey}`,
+  },
+  body: JSON.stringify({ model, messages, stream: true, tools }),
+});</code></pre>
+
+<p>关键点：<code>stream: true</code>——这告诉 API "我要流式响应，不要一次性返回"。</p>
+
+<h3>3.2 逐行解析 SSE 数据</h3>
+
+<pre><code><span class="code-loc">llm.ts:85-126</span>
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+
+// 逐块读取
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  buffer += decoder.decode(value, { stream: true });
+  const lines = buffer.split("\n");
+  buffer = lines.pop() || "";  // 保留不完整的最后一行
+
+  for (const line of lines) {
+    if (!line.trim() || !line.startsWith("data: ")) continue;
+
+    const data = line.slice(6);  // 去掉 "data: " 前缀
+    if (data === "[DONE]") { /* 结束处理 */ }
+
+    const parsed = JSON.parse(data);
+    const delta = parsed.choices?.[0]?.delta;
+
+    // 累加 content / reasoning_content / tool_calls
+    if (delta?.content) content += delta.content;
+    if (delta?.reasoning_content) reasoningContent += delta.reasoning_content;
+  }
+}</code></pre>
+
+<div class="callout callout-eg">
+  <strong>🔍 设计要点：</strong>
+  <ul>
+    <li><strong>Buffer 技巧：</strong>TCP 传输可能把一个完整的 SSE 事件切碎，也可能一次携带多个事件。<code>buffer</code> 负责缓存不完整的尾部，下一次再拼接。</li>
+    <li><strong>逐 chunk 累加：</strong>content 和 reasoning_content 是逐字累加的，但 tool_calls 需要按 index 合并（因为一个工具调用的 name 和 arguments 可能分多个 chunk 到达）。</li>
+    <li><strong>超时保护：</strong>每读一个 chunk 有 30 秒超时，整体请求有 60 秒超时，防止连接卡死。</li>
+  </ul>
+</div>
+
+<h3>3.3 处理 Tool Call 增量</h3>
+
+<pre><code><span class="code-loc">llm.ts:157-172</span>
+if (delta?.tool_calls) {
+  for (const tc of delta.tool_calls) {
+    const idx = tc.index ?? 0;
+    if (!toolCalls[idx]) {
+      toolCalls[idx] = { id: "", type: "function", function: { name: "", arguments: "" } };
+    }
+    if (tc.id) toolCalls[idx].id = tc.id;
+    if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
+    if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+  }
+}</code></pre>
+
+<p>注意 <strong><code>tc.index</code></strong>——LLM 可能在一个响应中同时调用多个工具（"并行工具调用"）。每个工具调用通过 index 区分，系统必须按 index 分别累加。</p>
+
+<h2>4. 🧪 动手尝试：模拟 SSE 解析</h2>
+
+<div class="sim-panel">
+  <h3>SSE 解析模拟器</h3>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.75rem;">点击按钮模拟收到一个 SSE chunk，观察累加过程</p>
+  <div class="sim-output" id="sim-output"><span class="dim">点击下方按钮开始模拟 SSE 流式接收...</span></div>
+  <button class="sim-btn" onclick="simNext()">▶ 接收下一个 Chunk</button>
+  <button class="sim-btn" style="background:var(--muted);margin-left:0.5rem;" onclick="simReset()">↺ 重置</button>
+</div>
+
+<div class="sim-panel">
+  <h3>累加结果</h3>
+  <div id="sim-state" style="font-family:var(--mono);font-size:0.85rem;line-height:1.6;">
+    reasoning_content: <span id="sim-reasoning" style="color:var(--muted)">(空)</span><br>
+    content: <span id="sim-content" style="color:var(--muted)">(空)</span><br>
+    finish_reason: <span id="sim-fr" style="color:var(--muted)">—</span>
+  </div>
+</div>
+
+<h2>5. 关键类型</h2>
+
+<p>打开 <a href="file:///Users/yinnan/data/code/agent/babyAgent/src/llm/types.ts"><code>src/llm/types.ts</code></a>，理解三个核心类型的关系：</p>
+
+<pre><code><span class="code-loc">types.ts:115-130</span>
+export interface LLMStreamChunk {          // 单个 chunk
+  delta: {
+    content?: string;
+    reasoning_content?: string;
+    tool_calls?: ToolCall[];
+  };
+  finish_reason?: "stop" | "tool_calls" | "length";
+  usage?: TokenUsage;                      // 只有最后一个 chunk 有
+  fullResponse?: LLMResponse;              // 只有最后一个 chunk 有（累加结果）
+}</code></pre>
+
+<p>整个流式通信可以总结为：</p>
+
+<div class="callout callout-tip">
+  <strong>⚡ 一句话：</strong> SSE 将一次 LLM 响应切成几十到几百个 <code>LLMStreamChunk</code>，每个 chunk 携带一小段 delta，客户端逐段累加，在最后一个 chunk 中获得完整的 <code>LLMResponse</code>。
+</div>
+
+<h2>6. ✅ 检测理解</h2>
+
+<div class="quiz" id="quiz-1">
+  <div class="quiz-question">1. SSE 协议中，每个数据行以什么前缀开头？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">A. <code>event: </code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q1')" data-correct="true">B. <code>data: </code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">C. <code>json: </code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q1')">D. <code>stream: </code></label>
+  </div>
+  <div class="quiz-result" id="q1-result"></div>
+</div>
+
+<div class="quiz" id="quiz-2">
+  <div class="quiz-question">2. 当 LLM 调用工具时，多个工具调用通过什么字段区分？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">A. <code>tool_call.id</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q2')" data-correct="true">B. <code>tool_call.index</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">C. <code>tool_call.function.name</code></label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q2')">D. 按到达顺序区分</label>
+  </div>
+  <div class="quiz-result" id="q2-result"></div>
+</div>
+
+<div class="quiz" id="quiz-3">
+  <div class="quiz-question">3. <code>finish_reason: "tool_calls"</code> 是什么意思？</div>
+  <div class="quiz-options">
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">A. 模型回答结束了</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">B. 请求超时了</label>
+    <label class="quiz-option" onclick="checkAnswer(this, true, 'q3')" data-correct="true">C. 模型请求执行工具，需要把结果传回继续对话</label>
+    <label class="quiz-option" onclick="checkAnswer(this, false, 'q3')">D. 模型拒绝回答问题</label>
+  </div>
+  <div class="quiz-result" id="q3-result"></div>
+</div>
+
+<h2>7. 📖 延伸阅读</h2>
+
+<ul>
+  <li><a href="https://platform.openai.com/docs/api-reference/chat" target="_blank">OpenAI Chat Completions API 参考</a> — SSE 格式的官方标准</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/llm/llm.ts"><code>src/llm/llm.ts</code></a> — 完整实现</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/src/llm/types.ts"><code>src/llm/types.ts</code></a> — 类型定义</li>
+  <li><a href="file:///Users/yinnan/data/code/agent/babyAgent/sse.log"><code>sse.log</code></a> — 281 个 chunk 的真实流式输出，建议从头到尾过一遍</li>
+  <li><a href="./sse-stream-parsing.md"><code>docs/tutorials/sse-stream-parsing.md</code></a> — 更详细的流程图和代码分析</li>
+</ul>
+
+<div class="callout">
+  <strong>💬 有疑问？</strong> 随时向 agent 提问——接下来我们会在 <a href="./lessons/0002-react-loop.html">Lesson 2: ReAct 循环</a> 中，基于 SSE 解析结果做多轮推理-执行。
+</div>
+
+</div><!-- /.container -->
+
+<script>
+// --- SSE 模拟器 ---
+const simChunks = [
+  { reasoning_content: "嗯", content: null },
+  { reasoning_content: "，", content: null },
+  { reasoning_content: "用户", content: null },
+  { reasoning_content: "的", content: null },
+  { reasoning_content: "问题", content: null },
+  { reasoning_content: "是", content: null },
+  { reasoning_content: "，", content: null },
+  { reasoning_content: "如何", content: null },
+  { reasoning_content: "构建", content: null },
+  { reasoning_content: "一个", content: null },
+  { reasoning_content: "Agent", content: null },
+  { reasoning_content: "。", content: null },
+  { reasoning_content: null, content: "构" },
+  { reasoning_content: null, content: "建" },
+  { reasoning_content: null, content: " " },
+  { reasoning_content: null, content: "A" },
+  { reasoning_content: null, content: "g" },
+  { reasoning_content: null, content: "e" },
+  { reasoning_content: null, content: "n" },
+  { reasoning_content: null, content: "t" },
+  { reasoning_content: null, content: "需" },
+  { reasoning_content: null, content: "要" },
+  { reasoning_content: null, content: "..." },
+  { reasoning_content: null, content: "", finish_reason: "stop" },
+];
+
+let simIdx = 0;
+let simReasoning = "";
+let simContent = "";
+
+function simNext() {
+  if (simIdx >= simChunks.length) { return; }
+
+  const chunk = simChunks[simIdx];
+  const output = document.getElementById("sim-output");
+
+  // Append to output
+  if (simIdx === 0) {
+    output.innerHTML = '<span class="dim">data: </span><span class="highlight">{"delta":{"content":"","role":"assistant"},"finish_reason":null}</span>\n';
+  }
+
+  if (chunk.reasoning_content) {
+    simReasoning += chunk.reasoning_content;
+    output.innerHTML += `<span class="dim">data: </span><span class="highlight">{"delta":{"reasoning_content":"${chunk.reasoning_content}","finish_reason":null}</span>\n`;
+  }
+  if (chunk.content) {
+    simContent += chunk.content;
+    output.innerHTML += `<span class="dim">data: </span><span class="highlight">{"delta":{"content":"${chunk.content}"},"finish_reason":null}</span>\n`;
+  }
+  if (chunk.finish_reason) {
+    output.innerHTML += `<span class="dim">data: </span><span class="highlight">{"delta":{},"finish_reason":"${chunk.finish_reason}"}</span>\n`;
+    output.innerHTML += `<span class="dim">data: [DONE]</span>\n`;
+  }
+
+  output.scrollTop = output.scrollHeight;
+
+  // Update state
+  document.getElementById("sim-reasoning").textContent = simReasoning || "(空)";
+  document.getElementById("sim-content").textContent = simContent || "(空)";
+  document.getElementById("sim-fr").textContent = chunk.finish_reason || "—";
+
+  simIdx++;
+}
+
+function simReset() {
+  simIdx = 0;
+  simReasoning = "";
+  simContent = "";
+  document.getElementById("sim-output").innerHTML = '<span class="dim">点击按钮开始模拟 SSE 流式接收...</span>';
+  document.getElementById("sim-reasoning").textContent = "(空)";
+  document.getElementById("sim-content").textContent = "(空)";
+  document.getElementById("sim-fr").textContent = "—";
+}
+
+// --- Quiz ---
+function checkAnswer(el, correct, qid) {
+  const options = el.parentElement.querySelectorAll(".quiz-option");
+  options.forEach(o => { o.style.cursor = "default"; o.onclick = null; });
+
+  // Reveal which one was correct
+  options.forEach(o => {
+    if (o.dataset.correct === "true") o.classList.add("correct");
+  });
+
+  if (correct) {
+    document.getElementById(qid + "-result").innerHTML = "✅ 正确！";
+    document.getElementById(qid + "-result").style.color = "var(--green)";
+  } else {
+    el.classList.add("wrong");
+    document.getElementById(qid + "-result").innerHTML = "❌ 不正确，再想想看";
+    document.getElementById(qid + "-result").style.color = "var(--red)";
+  }
+}
+</script>
+</body>
+</html>

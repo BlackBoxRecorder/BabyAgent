@@ -175,6 +175,8 @@ export class ChatClient implements LLMClient {
               if (choice?.finish_reason) {
                 finishReason = choice.finish_reason;
               }
+
+              // the last chunk return usage
               if (parsed.usage) {
                 usage = {
                   prompt_tokens: parsed.usage.prompt_tokens ?? 0,
@@ -202,8 +204,6 @@ export class ChatClient implements LLMClient {
                   tool_calls: delta?.tool_calls,
                 },
                 finish_reason: choice?.finish_reason,
-                usage: usage,
-                billing: billing,
               };
             } catch {
               // Skip malformed JSON chunks
