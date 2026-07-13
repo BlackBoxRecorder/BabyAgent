@@ -1,8 +1,8 @@
 # babyAgent
 
-> 从零构建的轻量级终端 AI 智能体 — 学习 Agent 开发的实践项目，由 DeepSeek 驱动。
+> 从零构建的终端 Agent — 学习 Agent 开发的实践项目，LLM+Tools+ChatSession。
 
-babyAgent 是一个完全从零开始构建的交互式 AI 智能体，运行在终端中。它基于 **ReAct**（推理-行动-观察）模式，将 DeepSeek 等 LLM 的强大推理能力与 bash 执行、文件系统操作和 MCP（Model Context Protocol）工具相结合，封装在持久化的会话式 REPL 中。
+babyAgent 是一个从零构建的交互式 AI 智能体，它基于 **ReAct**（推理-行动-观察）模式，基于 DeepSeek API，内置 Tools（read/write/edit/grep/find/bash），支持 MCP 和 Skills。
 
 **🎯 学习价值**：这个项目是学习 Agent 开发的绝佳实践，通过它可以深入理解：
 - **Agent 架构模式**：学习 ReAct 循环、工具调用、会话管理等核心概念
@@ -14,13 +14,12 @@ babyAgent 是一个完全从零开始构建的交互式 AI 智能体，运行在
 ## 特性
 
 - **🤖 ReAct 智能体循环** — 智能体在"思考→行动→观察"的循环中迭代：调用工具、处理结果、优化响应，直至任务完成
-- **💻 现代化 TUI 界面** — 基于 pi-tui 框架的终端用户界面，支持 Markdown 渲染、多行输入、自动补全和键盘快捷键
+- **💻 现代化 TUI 界面** — 基于 pi-tui 框架的终端用户界面，支持 Markdown 渲染、命令自动补全和键盘快捷键
 - **📂 会话持久化** — 每次对话自动保存到 `~/.babyAgent/sessions/`；可通过 `/continue <id>` 恢复、`/sessions` 列出
 - **🛠️ 内置工具集** — 执行 bash 命令、读写文件、grep 搜索、find 查找、diff 编辑文件 — 全部通过智能体驱动
 - **🔌 MCP 协议支持** — 加载外部 MCP 服务器提供的工具（通过 `~/.babyAgent/mcp.json` 配置），支持 stdio 和 HTTP/SSE 两种传输方式
-- **🧠 技能系统** — 可复用的指令文件（含 YAML 前置元数据的 SKILL.md），放置在 `~/.babyAgent/skills/` 或 `.babyAgent/skills/` 中；可被模型自动调用或通过 `/skill:<名称>` 手动触发
+- **🧠 技能系统** — 标准的 Skill 支持，放置在 `~/.babyAgent/skills/` 或 `.babyAgent/skills/` 中；可被模型自动调用或通过 `/skill:<名称>` 手动触发
 - **📡 流式输出** — 实时流式显示模型的推理过程和回答，包括思考过程（reasoning_content）和工具调用结果
-- **💾 会话安全** — 若智能体在轮次中崩溃，对话内容仍会保存，会话恢复到干净状态
 - **🔄 模型切换** — 支持多模型配置，按 `Ctrl+P` 即可在配置的模型间循环切换
 - **💰 费用追踪** — 实时显示 token 用量和费用统计，支持缓存命中计费
 
@@ -30,7 +29,7 @@ babyAgent 是一个完全从零开始构建的交互式 AI 智能体，运行在
 
 - **Node.js** >= 18.0.0
 - **pnpm**（推荐）或 npm
-- 一个 **LLM API key**（默认使用 DeepSeek）
+- **DeepSeek API key**
 
 ### 安装与运行
 
