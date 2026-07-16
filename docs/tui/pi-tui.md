@@ -1,6 +1,5 @@
 # @earendil-works/pi-tui
 
-# @earendil-works/pi-tui
 
 Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications.
 
