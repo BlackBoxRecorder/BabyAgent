@@ -99,7 +99,6 @@ export class Agent implements AgentSession {
     this.maxIterations = config.maxIterations ?? 100;
     this._currentModel = config.llm.currentModelId;
     this.logger = config.logger ?? getLogger();
-
     this.toolRegistry = config.toolRegistry;
   }
 
@@ -146,15 +145,14 @@ export class Agent implements AgentSession {
 
     let iterations = 0;
 
+    let funcDef = this.toolRegistry.getToolsForLLM();
+
     while (iterations < this.maxIterations) {
       iterations++;
 
       // 1. Call LLM with streaming
       let fullResponse: LLMResponse | undefined;
-      for await (const chunk of this.llm.chatStream(
-        messages,
-        this.toolRegistry.getToolsForLLM(),
-      )) {
+      for await (const chunk of this.llm.chatStream(messages, funcDef)) {
         yield { type: "chunk", chunk };
         if (chunk.fullResponse) {
           fullResponse = chunk.fullResponse;
@@ -199,89 +197,130 @@ export class Agent implements AgentSession {
         this._conversationMessages = messages;
         yield { type: "done", result };
         return result;
-      }
-
-      // 3. Execute tool calls
-      const assistantMessage = {
-        role: "assistant" as const,
-        content: fullResponse.content,
-        tool_calls: fullResponse.tool_calls,
-      } as Message;
-      messages.push(assistantMessage);
-
-      for (const toolCall of fullResponse.tool_calls ?? []) {
-        const toolName = toolCall.function.name;
-        const tool = this.toolRegistry.getTool(toolName);
-
-        this.logger.info("agent", "tool_call", {
-          tool: toolName,
-          callId: toolCall.id,
-          params: toolCall.function.arguments,
-        });
-
-        // Execute tool with safety net: convert thrown exceptions to
-        // ToolResult errors so the agent loop continues and the turn
-        // can be persisted (prevents orphaned session meta files).
-        let result: ToolResult;
-        let params: Record<string, any> = {};
-        try {
-          // 1. 检查工具是否存在
-          if (!tool) {
-            throw new Error(`Tool "${toolName}" not found`);
-          }
-
-          // 2. 解析参数
-          try {
-            params = JSON.parse(toolCall.function.arguments);
-          } catch (parseError) {
-            throw new Error(
-              `Failed to parse tool arguments: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
-            );
-          }
-
-          // 3. 执行工具
-          result = await tool.execute(params);
-
-          this.logger.info("agent", "tool_result", {
-            tool: toolName,
-            success: result.success,
-            outputLength: result.output?.length ?? 0,
+      } else if (fullResponse.finish_reason === "tool_calls") {
+        // tool call
+        // Defensive: the LLM may return finish_reason="tool_calls" with an
+        // empty/undefined tool_calls array.  Treat this as a protocol
+        // inconsistency and fall back to "stop" if there is content,
+        // otherwise abort as an error.
+        if (!fullResponse.tool_calls || fullResponse.tool_calls.length === 0) {
+          this.logger.warn("agent", "tool_calls_finish_with_empty_tools", {
+            iteration: iterations,
+            content: fullResponse.content,
           });
-        } catch (err) {
-          // 统一处理所有错误
-          result = {
-            success: false,
-            output: "",
-            error: err instanceof Error ? err.message : String(err),
-          };
 
-          // 根据错误类型记录日志
-          if (!tool) {
-            this.logger.warn("agent", "tool_not_found", { tool: toolName });
-          } else if (result.error?.includes("Failed to parse tool arguments")) {
-            this.logger.warn("agent", "tool_argument_parse_error", {
+          if (fullResponse.content) {
+            // Treat as normal stop — the model likely meant to reply
+            const result: AgentResult = {
+              success: true,
+              content: fullResponse.content,
+              iterations,
+              allMessages: messages,
+            };
+            this._conversationMessages = messages;
+            yield { type: "done", result };
+            return result;
+          }
+
+          // No content and no tool calls — unrecoverable
+          const result: AgentResult = {
+            success: false,
+            content:
+              "LLM returned finish_reason=tool_calls but no tool_calls and no content",
+            iterations,
+            allMessages: messages,
+          };
+          this._conversationMessages = messages;
+          yield { type: "done", result };
+          return result;
+        }
+
+        // 3. Execute tool calls
+        const assistantMessage = {
+          role: "assistant" as const,
+          content: fullResponse.content,
+          tool_calls: fullResponse.tool_calls,
+        } as Message;
+        messages.push(assistantMessage);
+
+        for (const toolCall of fullResponse.tool_calls) {
+          const toolName = toolCall.function.name;
+          const tool = this.toolRegistry.getTool(toolName);
+
+          this.logger.info("agent", "tool_call", {
+            tool: toolName,
+            callId: toolCall.id,
+            params: toolCall.function.arguments,
+          });
+
+          // Execute tool with safety net: convert thrown exceptions to
+          // ToolResult errors so the agent loop continues and the turn
+          // can be persisted (prevents orphaned session meta files).
+          let result: ToolResult;
+          let params: Record<string, any> = {};
+          try {
+            // 1. 检查工具是否存在
+            if (!tool) {
+              throw new Error(`Tool "${toolName}" not found`);
+            }
+
+            // 2. 解析参数
+            try {
+              params = JSON.parse(toolCall.function.arguments);
+            } catch (parseError) {
+              throw new Error(
+                `Failed to parse tool arguments: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+              );
+            }
+
+            // 3. 执行工具
+            result = await tool.execute(params);
+
+            this.logger.info("agent", "tool_result", {
               tool: toolName,
-              error: result.error,
+              success: result.success,
+              outputLength: result.output?.length ?? 0,
             });
-          } else {
-            this.logger.error(
-              "agent",
-              "tool_error",
-              {
+          } catch (err) {
+            // 统一处理所有错误
+            result = {
+              success: false,
+              output: "",
+              error: err instanceof Error ? err.message : String(err),
+            };
+
+            // 根据错误类型记录日志
+            if (!tool) {
+              this.logger.warn("agent", "tool_not_found", { tool: toolName });
+            } else if (
+              result.error?.includes("Failed to parse tool arguments")
+            ) {
+              this.logger.warn("agent", "tool_argument_parse_error", {
                 tool: toolName,
                 error: result.error,
-              },
-              err instanceof Error ? err : new Error(String(err)),
-            );
+              });
+            } else {
+              this.logger.error(
+                "agent",
+                "tool_error",
+                {
+                  tool: toolName,
+                  error: result.error,
+                },
+                err instanceof Error ? err : new Error(String(err)),
+              );
+            }
           }
-        }
-        yield { type: "tool_result", tool: toolName, params, result };
+          yield { type: "tool_result", tool: toolName, params, result };
 
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(result),
-        });
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result),
+          });
+        }
+      } else {
+        throw new Error("error finish_reason");
       }
     }
 
@@ -292,7 +331,6 @@ export class Agent implements AgentSession {
     const result: AgentResult = {
       success: false,
       content: "Maximum ReAct iterations reached without a final response.",
-
       iterations,
       allMessages: messages,
     };

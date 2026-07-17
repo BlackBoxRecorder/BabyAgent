@@ -82,7 +82,11 @@ export class ChatClient implements LLMClient {
         throw new Error(`LLM API error (${response.status}): ${errorText}`);
       }
 
-      const reader = response.body!.getReader();
+      if (!response.body) {
+        throw new Error("LLM API response body is null");
+      }
+
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
@@ -117,7 +121,24 @@ export class ChatClient implements LLMClient {
 
           const { done, value } = readResult;
 
-          if (done) break;
+          if (done) {
+            // Stream ended without [DONE] — produce final chunk with
+            // accumulated results so the caller still gets the full response.
+            yield {
+              delta: {},
+              finish_reason: finishReason,
+              billing,
+              usage,
+              fullResponse: {
+                content: content || null,
+                tool_calls:
+                  toolCalls.length > 0 ? toolCalls.filter(Boolean) : undefined,
+                finish_reason: finishReason ?? "stop",
+                reasoning_content: reasoningContent || undefined,
+              },
+            };
+            break;
+          }
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
@@ -137,7 +158,10 @@ export class ChatClient implements LLMClient {
                 usage,
                 fullResponse: {
                   content: content || null,
-                  tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+                  tool_calls:
+                    toolCalls.length > 0
+                      ? toolCalls.filter(Boolean)
+                      : undefined,
                   finish_reason: finishReason ?? "stop",
                   reasoning_content: reasoningContent || undefined,
                 },
@@ -154,6 +178,7 @@ export class ChatClient implements LLMClient {
               if (delta?.content) content += delta.content;
               if (delta?.reasoning_content)
                 reasoningContent += delta.reasoning_content;
+
               if (delta?.tool_calls) {
                 for (const tc of delta.tool_calls) {
                   const idx: number = tc.index ?? 0;
@@ -165,8 +190,8 @@ export class ChatClient implements LLMClient {
                     };
                   }
                   if (tc.id) toolCalls[idx].id = tc.id;
-                  if (tc.function?.name)
-                    toolCalls[idx].function.name += tc.function.name;
+                  if (tc.function?.name && !toolCalls[idx].function.name)
+                    toolCalls[idx].function.name = tc.function.name;
                   if (tc.function?.arguments)
                     toolCalls[idx].function.arguments += tc.function.arguments;
                 }
@@ -191,10 +216,7 @@ export class ChatClient implements LLMClient {
               }
 
               if (usage) {
-                billing = this.billingCalculator.compute(
-                  usage,
-                  this.models[this._currentModelIndex].cost,
-                );
+                billing = this.billingCalculator.compute(usage, model.cost);
               }
 
               yield {
