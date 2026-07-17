@@ -95,3 +95,7 @@ _Avoid_: Log record, log line
 **Log File**:
 A text file in `~/.babyAgent/logs/` containing log entries for a specific session and date. Named `{date}/session-{sessionId}.log`.
 _Avoid_: Log output, log document
+
+**Memory**:
+Cross-session storage for user preferences, learned patterns, and corrections. Persisted as Markdown files under `~/.babyAgent/`.
+_Avoid_: Profile, state, cache

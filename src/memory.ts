@@ -7,80 +7,64 @@ export interface MemoryData {
 }
 
 export class MemoryManager {
-  private memoryPath: string;
+  private filePath: string;
 
   constructor(memoryPath?: string) {
-    this.memoryPath =
-      memoryPath ?? path.join(os.homedir(), ".babyAgent", "memory.md");
+    if (memoryPath && memoryPath.endsWith(".md")) {
+      this.filePath = memoryPath;
+    } else {
+      this.filePath = path.join(os.homedir(), ".babyAgent", "memory.md");
+    }
   }
 
   async load(): Promise<MemoryData> {
     try {
-      const content = await fs.readFile(this.memoryPath, "utf-8");
-      return this._parseMarkdown(content);
+      const content = await fs.readFile(this.filePath, "utf-8");
+      return this._parse(content);
     } catch {
       return { items: [] };
     }
   }
 
   async save(data: MemoryData): Promise<void> {
-    await this._ensureDir();
-    const content = this._formatMarkdown(data);
-    await fs.writeFile(this.memoryPath, content, "utf-8");
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.writeFile(this.filePath, this._format(data), "utf-8");
   }
 
   async addMemory(text: string): Promise<MemoryData> {
     const data = await this.load();
-
     if (!data.items.includes(text)) {
       data.items.push(text);
+      await this.save(data);
     }
-
-    await this.save(data);
     return data;
   }
 
-  async getMemory(): Promise<string> {
+  async getMemoryText(): Promise<string> {
     const data = await this.load();
     if (data.items.length === 0) {
       return "";
     }
-
-    const lines: string[] = [];
-    for (const item of data.items) {
-      lines.push(`- ${item}`);
-    }
-    return lines.join("\n");
+    return data.items.map((item) => `- ${item}`).join("\n");
   }
 
-  private _parseMarkdown(content: string): MemoryData {
+  private _parse(content: string): MemoryData {
     const items: string[] = [];
-    const lines = content.split("\n");
-
-    for (const line of lines) {
-      const itemMatch = line.match(/^-\s+(.+)$/);
-      if (itemMatch) {
-        items.push(itemMatch[1].trim());
+    for (const line of content.split("\n")) {
+      const match = line.match(/^-\s+(.+)$/);
+      if (match) {
+        items.push(match[1].trim());
       }
     }
-
     return { items };
   }
 
-  private _formatMarkdown(data: MemoryData): string {
+  private _format(data: MemoryData): string {
     if (data.items.length === 0) {
       return "# Memory\n";
     }
-
-    const lines: string[] = ["# Memory", ""];
-    for (const item of data.items) {
-      lines.push(`- ${item}`);
-    }
-    return lines.join("\n") + "\n";
-  }
-
-  private async _ensureDir(): Promise<void> {
-    const dir = path.dirname(this.memoryPath);
-    await fs.mkdir(dir, { recursive: true });
+    return ["# Memory", "", ...data.items.map((item) => `- ${item}`), ""].join(
+      "\n",
+    );
   }
 }

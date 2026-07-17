@@ -79,7 +79,10 @@ export class DefaultCommandHandler implements CommandHandler {
       const prefix = input.startsWith("/remember") ? "/remember" : "记住";
       const content = input.slice(prefix.length).trim();
       if (!content) {
-        return { type: "display", text: "Usage: /remember <what to remember> 或 记住 <内容>" };
+        return {
+          type: "display",
+          text: "Usage: /remember <what to remember> 或 记住 <内容>",
+        };
       }
       const manager = new MemoryManager();
       await manager.addMemory(content);
@@ -117,15 +120,15 @@ export class DefaultCommandHandler implements CommandHandler {
   private _getHelpText(): string {
     return [
       "Available commands:",
-      "  /help       - Show this help message",
-      "  /new        - Start a new session",
-      "  /sessions   - List session history",
-      "  /tools      - List available tools",
-      "  /skill:<name> - Invoke a skill by name",
-      "  /mcp        - List MCP server status",
-      "  /remember   - Remember a user preference",
-      "  /reset      - Same as /new",
-      "  /q          - Exit the program",
+      "  /help           - Show this help message",
+      "  /new            - Start a new session",
+      "  /sessions       - List session history",
+      "  /tools          - List available tools",
+      "  /skill:<name>   - Invoke a skill by name",
+      "  /mcp            - List MCP server status",
+      "  /remember       - Remember a user preference",
+      "  /reset          - Same as /new",
+      "  /q              - Exit the program",
       "",
       "Any other input will be sent to the AI agent.",
       "",

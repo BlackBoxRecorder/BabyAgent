@@ -173,7 +173,7 @@ export class ConversationCoordinator {
       const meta = await this.sessionManager.createSession(userInput);
       this._sessionId = meta.id;
 
-      const profileText = await this.memoryManager.getMemory();
+      const profileText = await this.memoryManager.getMemoryText();
       const systemPrompt = profileText
         ? `${this.agent.getSystemPrompt()}\n\n${profileText}`
         : this.agent.getSystemPrompt();

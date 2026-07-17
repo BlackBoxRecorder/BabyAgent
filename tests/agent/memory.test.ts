@@ -58,7 +58,10 @@ describe("MemoryManager", () => {
       const data = { items: ["I like concise answers"] };
       await manager.save(data);
 
-      const content = await fs.readFile(path.join(tmpDir, "memory.md"), "utf-8");
+      const content = await fs.readFile(
+        path.join(tmpDir, "memory.md"),
+        "utf-8",
+      );
       expect(content).toContain("# Memory");
       expect(content).toContain("- I like concise answers");
     });
@@ -89,13 +92,15 @@ describe("MemoryManager", () => {
       await manager.addMemory("I like concise answers");
 
       const data = await manager.load();
-      expect(data.items.filter((i) => i === "I like concise answers")).toHaveLength(1);
+      expect(
+        data.items.filter((i) => i === "I like concise answers"),
+      ).toHaveLength(1);
     });
   });
 
-  describe("getMemory", () => {
+  describe("getMemoryText", () => {
     it("should return empty string for empty memory", async () => {
-      const text = await manager.getMemory();
+      const text = await manager.getMemoryText();
       expect(text).toBe("");
     });
 
@@ -103,7 +108,7 @@ describe("MemoryManager", () => {
       await manager.addMemory("Use Chinese");
       await manager.addMemory("Keep answers concise");
 
-      const text = await manager.getMemory();
+      const text = await manager.getMemoryText();
       expect(text).toContain("- Use Chinese");
       expect(text).toContain("- Keep answers concise");
     });
