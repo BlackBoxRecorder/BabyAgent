@@ -36,6 +36,9 @@ const baseConfig = {
     // MCP SDK uses cross-spawn which dynamically requires child_process —
     // must be kept external to avoid esbuild ESM bundling issues.
     "@modelcontextprotocol/sdk",
+    // pino uses dynamic require() internally which breaks ESM bundling
+    "pino",
+    "pino/*",
   ],
   // Resolve .ts files directly (workspace packages have src/index.ts)
   resolveExtensions: [".ts", ".tsx", ".js", ".mjs", ".json"],

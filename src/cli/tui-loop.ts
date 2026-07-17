@@ -181,11 +181,11 @@ export class TuiLoop {
       [
         { name: "help", description: "Show help message" },
         { name: "new", description: "Start a new session (or Ctrl+N)" },
-        { name: "reset", description: "Same as /new" },
         { name: "sessions", description: "List session history" },
         { name: "tools", description: "List available tools" },
         { name: "skill", description: "Invoke a skill by name" },
         { name: "mcp", description: "List MCP server status" },
+        { name: "remember", description: "Remember a user preference" },
         { name: "exit", description: "Exit the program" },
         { name: "q", description: "Exit the program" },
         { name: "quit", description: "Exit the program" },

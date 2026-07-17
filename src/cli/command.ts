@@ -10,6 +10,7 @@ import type { ConversationCoordinator } from "../coordinator.js";
 import type { SkillManager } from "../skills.js";
 import type { McpManager, ServerStatus } from "../mcp/index.js";
 import type { Tool } from "../tools/interface/index.js";
+import { MemoryManager } from "../memory.js";
 
 // ============================================================================
 // Types
@@ -73,6 +74,18 @@ export class DefaultCommandHandler implements CommandHandler {
       return { type: "noop" };
     }
 
+    // /remember or "记住" (natural language)
+    if (input.startsWith("/remember ") || input.startsWith("记住")) {
+      const prefix = input.startsWith("/remember") ? "/remember" : "记住";
+      const content = input.slice(prefix.length).trim();
+      if (!content) {
+        return { type: "display", text: "Usage: /remember <what to remember> 或 记住 <内容>" };
+      }
+      const manager = new MemoryManager();
+      await manager.addMemory(content);
+      return { type: "display", text: `记住了: ${content}` };
+    }
+
     // /new, /reset
     if (input === "/new" || input === "/reset") {
       context.coordinator.newSession();
@@ -110,10 +123,13 @@ export class DefaultCommandHandler implements CommandHandler {
       "  /tools      - List available tools",
       "  /skill:<name> - Invoke a skill by name",
       "  /mcp        - List MCP server status",
+      "  /remember   - Remember a user preference",
       "  /reset      - Same as /new",
       "  /q          - Exit the program",
       "",
       "Any other input will be sent to the AI agent.",
+      "",
+      "You can also say '记住 <content>' to save preferences.",
     ].join("\n");
   }
 
