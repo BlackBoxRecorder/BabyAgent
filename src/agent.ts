@@ -13,12 +13,7 @@ import type {
   LLMStreamChunk,
   Message,
 } from "./llm/index.js";
-import {
-  DefaultToolRegistry,
-  type Tool,
-  type ToolRegistry,
-  type ToolResult,
-} from "./tools/interface/index.js";
+import { type ToolRegistry, type ToolResult } from "./tools/interface/index.js";
 import type { Logger } from "./logger.js";
 import { getLogger } from "./logger.js";
 
@@ -30,8 +25,8 @@ import { getLogger } from "./logger.js";
 export interface AgentConfig {
   /** LLM client for chat completion */
   llm: LLMClient;
-  /** Tools available to the agent */
-  tools: Tool[];
+  /** Tool registry for looking up and executing tools */
+  toolRegistry: ToolRegistry;
   /** System prompt for the conversation */
   systemPrompt: string;
   /** Maximum ReAct iterations (prevents infinite loops), default: 10 */
@@ -105,10 +100,7 @@ export class Agent implements AgentSession {
     this._currentModel = config.llm.currentModelId;
     this.logger = config.logger ?? getLogger();
 
-    this.toolRegistry = new DefaultToolRegistry();
-    for (const tool of config.tools) {
-      this.toolRegistry.register(tool);
-    }
+    this.toolRegistry = config.toolRegistry;
   }
 
   // ==========================================================================

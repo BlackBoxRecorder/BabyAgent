@@ -14,7 +14,11 @@ import type {
   LLMStreamChunk,
   Message,
 } from "../../src/llm/index.js";
-import type { Tool, ToolResult } from "../../src/tools/interface/index.js";
+import {
+  DefaultToolRegistry,
+  type Tool,
+  type ToolResult,
+} from "../../src/tools/interface/index.js";
 
 // ============================================================================
 // Mock LLM Client — returns a tool call response, then a final text response
@@ -178,9 +182,12 @@ describe("ConversationCoordinator", () => {
       input: "test",
     });
 
+    const toolRegistry = new DefaultToolRegistry();
+    toolRegistry.register(throwingTool);
+
     const agent = new Agent({
       llm: mockLLM,
-      tools: [throwingTool],
+      toolRegistry,
       systemPrompt: "test",
       logger,
     });
@@ -218,7 +225,7 @@ describe("ConversationCoordinator", () => {
 
     const agent = new Agent({
       llm: mockLLM,
-      tools: [],
+      toolRegistry: new DefaultToolRegistry(),
       systemPrompt: "test",
       logger,
     });
@@ -286,7 +293,7 @@ describe("ConversationCoordinator", () => {
 
     const agent = new Agent({
       llm: mockLLM,
-      tools: [],
+      toolRegistry: new DefaultToolRegistry(),
       systemPrompt: "test",
       logger,
     });
@@ -337,7 +344,7 @@ describe("ConversationCoordinator", () => {
 
     const agent = new Agent({
       llm: mockLLM,
-      tools: [],
+      toolRegistry: new DefaultToolRegistry(),
       systemPrompt: "test",
       logger,
     });
@@ -379,9 +386,12 @@ describe("ConversationCoordinator", () => {
 
     const mockLLM = createMockLLMWithToolCall("normal_tool", { input: "test" });
 
+    const toolRegistry = new DefaultToolRegistry();
+    toolRegistry.register(normalTool);
+
     const agent = new Agent({
       llm: mockLLM,
-      tools: [normalTool],
+      toolRegistry,
       systemPrompt: "test",
       logger,
     });

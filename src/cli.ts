@@ -8,8 +8,8 @@
  * Configuration is read from ~/.babyAgent/models.json.
  * See the Model Config section in CONTEXT.md for format details.
  */
-import { createApp } from "./cli/app-factory.js";
-import { TuiLoop } from "./cli/tui-loop.js";
+import { createApp } from "./app.js";
+import { TuiLoop } from "./tui/tui-loop.js";
 
 // ============================================================================
 // Main
@@ -21,7 +21,6 @@ const {
   skillManager,
   tools,
   mcpStatuses,
-  models,
   commandHandler,
 } = await createApp();
 

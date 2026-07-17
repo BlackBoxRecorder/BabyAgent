@@ -4,24 +4,20 @@
  * Isolates the construction logic so the entry point (cli.ts) stays thin
  * and the component wiring is explicit and testable.
  */
-import { Agent } from "../agent.js";
-import { SessionManager } from "../session.js";
-import { ConversationCoordinator } from "../coordinator.js";
-import { ChatClient, DefaultBillingCalculator } from "../llm/index.js";
-import {
-  loadModelConfig,
-  getAllModels,
-  type ModelEntry,
-} from "../llm/models.js";
-import { createBashToolAsTool } from "../tools/bash/index.js";
-import { createAllFsTools } from "../tools/fs/index.js";
-import { McpManager, type ServerStatus } from "../mcp/index.js";
-import type { Tool } from "../tools/interface/index.js";
-import { SkillManager } from "../skills.js";
-import { loadSystemPrompt, getSystemPromptPath } from "../llm/prompt.js";
-import { getLogger } from "../logger.js";
-import { DefaultCommandHandler } from "./command.js";
-import type { CommandHandler } from "./command.js";
+import { Agent } from "./agent.js";
+import { SessionManager } from "./session.js";
+import { ConversationCoordinator } from "./coordinator.js";
+import { ChatClient, DefaultBillingCalculator } from "./llm/index.js";
+import { loadModelConfig, getAllModels } from "./llm/models.js";
+import { createBashToolAsTool } from "./tools/bash/index.js";
+import { createAllFsTools } from "./tools/fs/index.js";
+import { McpManager, type ServerStatus } from "./mcp/index.js";
+import { DefaultToolRegistry, type Tool } from "./tools/interface/index.js";
+import { SkillManager } from "./skills.js";
+import { loadSystemPrompt, getSystemPromptPath } from "./llm/prompt.js";
+import { getLogger } from "./logger.js";
+import { DefaultCommandHandler } from "./tui/command.js";
+import type { CommandHandler } from "./tui/command.js";
 
 // ============================================================================
 // Types
@@ -33,8 +29,6 @@ export interface AppComponents {
   skillManager: SkillManager;
   tools: readonly Tool[];
   mcpStatuses: readonly ServerStatus[];
-  /** List of available models from the config, for UI switching. */
-  models: ModelEntry[];
   /** Command handler for slash commands. */
   commandHandler: CommandHandler;
 }
@@ -91,6 +85,12 @@ export async function createApp(): Promise<AppComponents> {
   // Build the full tool list
   const allTools: Tool[] = [bashTool, ...fsTools, ...mcpTools];
 
+  // Create tool registry and register all tools
+  const toolRegistry = new DefaultToolRegistry();
+  for (const tool of allTools) {
+    toolRegistry.register(tool);
+  }
+
   // ------------------------------------------------------------------
   // Skills
   // ------------------------------------------------------------------
@@ -130,7 +130,7 @@ export async function createApp(): Promise<AppComponents> {
   // ------------------------------------------------------------------
   const agent = new Agent({
     llm: new ChatClient(allModels, billingCalculator),
-    tools: allTools,
+    toolRegistry,
     systemPrompt,
     logger,
   });
@@ -155,7 +155,6 @@ export async function createApp(): Promise<AppComponents> {
     skillManager,
     tools: allTools,
     mcpStatuses,
-    models: allModels,
     commandHandler,
   };
 }

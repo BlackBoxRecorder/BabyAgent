@@ -192,7 +192,7 @@ const DEFAULT_CONFIG: ModelConfigFile = {
           maxTokens: 384000,
           cost: {
             input: 1,
-            output: 3,
+            output: 2,
             cacheRead: 0.02,
             cacheWrite: 0,
           },
