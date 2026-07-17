@@ -176,19 +176,25 @@ export class TuiLoop {
     this.editor = new Editor(this.tui, editorTheme, { paddingX: 0 });
     this.editor.onSubmit = (text: string) => this.handleSubmit(text);
 
-    // Set up autocomplete with slash commands
+    // Set up autocomplete with slash commands.
+    // Built-in commands + skill names as first-class slash commands.
+    const skills = this.skillManager.getSkills();
+    const skillItems = skills.map((s) => ({
+      name: "skill:" + s.name,
+      description: `[Skill] ${s.description}`,
+    }));
     const baseProvider = new CombinedAutocompleteProvider(
       [
         { name: "help", description: "Show help message" },
         { name: "new", description: "Start a new session (or Ctrl+N)" },
         { name: "sessions", description: "List session history" },
         { name: "tools", description: "List available tools" },
-        { name: "skill", description: "Invoke a skill by name" },
         { name: "mcp", description: "List MCP server status" },
         { name: "remember", description: "Remember a user preference" },
         { name: "exit", description: "Exit the program" },
         { name: "q", description: "Exit the program" },
         { name: "quit", description: "Exit the program" },
+        ...skillItems,
       ],
       process.cwd(),
     );
@@ -367,6 +373,27 @@ export class TuiLoop {
       case "noop":
         // Do nothing
         break;
+      case "skill_activate": {
+        this.coordinator.activateSkill(result.name, result.content);
+        const skill = this.skillManager.getSkill(result.name);
+        const desc = skill ? ` — ${skill.description}` : "";
+        this.addMessage(
+          new Text(`[Skill "${result.name}" 已激活]${desc}`, 1, 0),
+        );
+        this.updateStatusBar();
+        if (result.prompt) {
+          this.addMessage(
+            new Text(
+              `${ansi.cyan("You")} ${ansi.dim(">")} ${result.prompt}`,
+              0,
+              0,
+              ansi.bgGray,
+            ),
+          );
+          await this.executeTurn(result.prompt);
+        }
+        break;
+      }
       case "unknown":
         this.addMessage(
           new Text(
@@ -574,10 +601,15 @@ export class TuiLoop {
     const sessionPart = sid
       ? `${ansi.bold(ansi.green(`[${sid.slice(0, 8)}]`))}`
       : ansi.gray("[No session]");
+    const activeSkills = this.coordinator.getActiveSkills();
+    const skillBadge =
+      activeSkills.length > 0
+        ? `  ${ansi.bold(ansi.magenta(`[Skills: ${activeSkills.join(", ")}]`))}`
+        : "";
     const hints = ansi.dim(
       "Ctrl+H History | Ctrl+N New | Ctrl+P Model | Esc Cancel",
     );
-    return `${sessionPart}  ${hints}`;
+    return `${sessionPart}${skillBadge}  ${hints}`;
   }
 
   /** Update the status bar text and trigger a render. */
@@ -713,15 +745,6 @@ export class TuiLoop {
   private cycleModel(): void {
     this.coordinator.switchModel();
     this.currentModelId = this.coordinator.currentModel;
-
-    this.addMessage(
-      new Text(
-        `${ansi.cyan("Model")} ${ansi.dim("→")} ${ansi.bold(this.currentModelId)}`,
-        0,
-        0,
-        ansi.bgGray,
-      ),
-    );
     this._updateInfoBar();
     this.tui.requestRender();
   }

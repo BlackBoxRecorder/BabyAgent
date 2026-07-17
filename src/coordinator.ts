@@ -104,6 +104,41 @@ export class ConversationCoordinator {
     this.logger.setSessionId(null);
   }
 
+  /**
+   * Activate a skill by injecting its content as a system message.
+   * Session-level persistence — persists until /new resets the session.
+   * Stacking mode — multiple skills can be active simultaneously.
+   * Re-activating the same skill replaces its previous content.
+   */
+  activateSkill(name: string, content: string): void {
+    const messages = [...this.agent.getMessages()] as any[];
+    const skillMsg = {
+      role: "system",
+      content: `[Skill: ${name}]\n\n${content}`,
+      _skillName: name,
+    };
+
+    // Replace existing skill with same name, otherwise insert after system prompt
+    const existingIdx = messages.findIndex(
+      (m: any) => m.role === "system" && m._skillName === name,
+    );
+    if (existingIdx >= 0) {
+      messages[existingIdx] = skillMsg;
+    } else {
+      const sysIdx = messages.findIndex((m: any) => m.role === "system");
+      messages.splice(sysIdx + 1, 0, skillMsg);
+    }
+
+    this.agent.setMessages(messages as any);
+  }
+
+  /** Get the names of all currently activated skills (for status bar display). */
+  getActiveSkills(): string[] {
+    return (this.agent.getMessages() as any[])
+      .filter((m: any) => m._skillName)
+      .map((m: any) => m._skillName as string);
+  }
+
   /** List all persisted sessions, most recent first. */
   async listSessions(): Promise<SessionMeta[]> {
     return this.sessionManager.listSessions();

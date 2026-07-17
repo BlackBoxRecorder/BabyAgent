@@ -23,6 +23,8 @@ export type CommandResult =
   | { type: "action"; action: () => Promise<void> }
   /** Send input to the LLM as a turn. */
   | { type: "turn"; input: string }
+  /** Activate a skill by injecting its content into the conversation. */
+  | { type: "skill_activate"; name: string; content: string; prompt?: string }
   /** Command not recognized. */
   | { type: "unknown" }
   /** No-op (e.g., /sessions with autocomplete). */
@@ -68,9 +70,30 @@ export class DefaultCommandHandler implements CommandHandler {
       return { type: "noop" };
     }
 
-    // /skill — no-op, handled by autocomplete
-    if (input === "/skill") {
-      return { type: "noop" };
+    // /<skill-name> [prompt?] — also handles /skill:<name> for backward compat
+    const cmdMatch = input.match(/^\/(\S+?)(?:\s+(.*))?$/);
+    if (cmdMatch) {
+      let [, name, prompt] = cmdMatch;
+      // Strip /skill: prefix for backward compat
+      if (name.startsWith("skill:")) {
+        name = name.slice(6);
+      }
+      const skill = context.skillManager.getSkill(name);
+      if (skill) {
+        let content: string;
+        try {
+          content = await context.skillManager.readSkillContent(name);
+        } catch {
+          return { type: "display", text: `Skill "${name}" not found.` };
+        }
+        return {
+          type: "skill_activate",
+          name,
+          content,
+          prompt: prompt || undefined,
+        };
+      }
+      // Not a recognized skill → fall through to unknown
     }
 
     // /new, /reset

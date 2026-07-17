@@ -106,7 +106,7 @@ export class SkillAutocompleteProvider implements AutocompleteProvider {
   }
 
   get triggerCharacters(): string[] {
-    return this.wrapped?.triggerCharacters ?? [":"];
+    return this.wrapped?.triggerCharacters ?? [];
   }
 
   shouldTriggerFileCompletion(
