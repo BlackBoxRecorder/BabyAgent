@@ -508,10 +508,17 @@ export class TuiLoop {
 
           case "tool_result": {
             totalToolCalls++;
-            // Finalize thinking display if active (tool calls happen after thinking)
+            // Stop tracking the current thinking stream — keep the component
+            // visible in the message history so multi-phase thinking is
+            // preserved (e.g. Think → Tools → Think → Tools → Answer).
             if (this.thinkingText) {
               this.thinkingText = null;
+              this.thinkingContent = "";
             }
+            // Reset streaming markdown so the next LLM call's content
+            // creates a new component positioned AFTER tool results.
+            this.streamingMd = null;
+            this.streamingText = "";
             // Format: [tool_name(params)] ✓/✗
             const status = event.result.success
               ? ansi.green("✓")
