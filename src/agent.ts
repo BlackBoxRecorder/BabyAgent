@@ -276,6 +276,61 @@ export class Agent implements AgentSession {
             // 3. 执行工具
             result = await tool.execute(params);
 
+            // ------------------------------------------------------------------
+            // Special handling: Skill meta-tool
+            // The Skill tool returns skill content in metadata.  We inject it
+            // as a system message into the local messages array so the model
+            // sees the skill instructions on the very next iteration in the
+            // same turn (no need to wait for the next user turn).
+            // ------------------------------------------------------------------
+            if (
+              toolName === "Skill" &&
+              result.success &&
+              result.metadata?.skillContent
+            ) {
+              const skillName = result.metadata.skillName as string;
+              const skillContent = result.metadata.skillContent as string;
+              const skillHash = result.metadata.skillContentHash as string;
+
+              // Dedup: check if this skill (same name + same content) is
+              // already injected into the conversation.
+              const existingIdx = (messages as any[]).findIndex(
+                (m: any) => m.role === "system" && m._skillName === skillName,
+              );
+
+              if (existingIdx >= 0 && skillHash) {
+                const existingHash = (messages[existingIdx] as any)._skillHash;
+                if (existingHash === skillHash) {
+                  // Identical content already loaded — note it in the tool
+                  // result instead of duplicating the system message.
+                  result = {
+                    ...result,
+                    output: `Skill "${skillName}" is already loaded and active.`,
+                  };
+                } else {
+                  // Content changed — replace the existing system message.
+                  messages[existingIdx] = {
+                    role: "system",
+                    content: `[Skill: ${skillName}]\n\n${skillContent}`,
+                    _skillName: skillName,
+                    _skillHash: skillHash,
+                  } as any;
+                }
+              } else {
+                // First injection — insert after the primary system prompt.
+                const sysIdx = (messages as any[]).findIndex(
+                  (m: any) => m.role === "system",
+                );
+                const insertIdx = sysIdx >= 0 ? sysIdx + 1 : 1;
+                (messages as any[]).splice(insertIdx, 0, {
+                  role: "system",
+                  content: `[Skill: ${skillName}]\n\n${skillContent}`,
+                  _skillName: skillName,
+                  _skillHash: skillHash,
+                });
+              }
+            }
+
             this.logger.info("agent", "tool_result", {
               tool: toolName,
               success: result.success,

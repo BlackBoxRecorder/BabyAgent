@@ -13,6 +13,7 @@ import {
 } from "./session.js";
 import type { Logger } from "./logger.js";
 import { getLogger } from "./logger.js";
+import * as crypto from "node:crypto";
 
 // ============================================================================
 // Types
@@ -54,6 +55,8 @@ export class ConversationCoordinator {
   /** Session-level accumulated billing (sum of all completed Turns). */
   private _sessionBilling: BillingInfo = _zeroBilling();
   private logger: Logger;
+  /** Track content hashes of activated skills for idempotent re-invocation. */
+  private _activeSkillHashes: Map<string, string> = new Map();
 
   constructor(config: CoordinatorConfig) {
     this.agent = config.agent;
@@ -94,6 +97,7 @@ export class ConversationCoordinator {
     this._sessionId = null;
     this._sessionUsage = _zeroUsage();
     this._sessionBilling = _zeroBilling();
+    this._activeSkillHashes.clear();
     this.agent.setMessages([]);
 
     this.logger.info("coordinator", "new_session", {
@@ -108,9 +112,26 @@ export class ConversationCoordinator {
    * Activate a skill by injecting its content as a system message.
    * Session-level persistence — persists until /new resets the session.
    * Stacking mode — multiple skills can be active simultaneously.
-   * Re-activating the same skill replaces its previous content.
+   * Re-activating the same skill with identical content is a no-op.
+   * Re-activating with changed content replaces the previous version.
    */
   activateSkill(name: string, content: string): void {
+    // Dedup: skip if the same skill with identical content is already active
+    const contentHash = crypto
+      .createHash("sha256")
+      .update(content)
+      .digest("hex")
+      .slice(0, 16);
+    const existingHash = this._activeSkillHashes.get(name);
+    if (existingHash === contentHash) {
+      // Same content already injected — no-op
+      this.logger.info("coordinator", "skill_already_active", { name });
+      return;
+    }
+
+    // Track the new hash
+    this._activeSkillHashes.set(name, contentHash);
+
     const messages = [...this.agent.getMessages()] as any[];
     const skillMsg = {
       role: "system",
@@ -130,6 +151,7 @@ export class ConversationCoordinator {
     }
 
     this.agent.setMessages(messages as any);
+    this.logger.info("coordinator", "skill_activated", { name });
   }
 
   /** Get the names of all currently activated skills (for status bar display). */
@@ -179,6 +201,7 @@ export class ConversationCoordinator {
     // Accumulate historical turn usage & billing for the info bar
     this._sessionUsage = _zeroUsage();
     this._sessionBilling = _zeroBilling();
+    this._activeSkillHashes.clear();
     const records = await this.sessionManager.loadTurnRecords(resolvedId);
 
     for (const rec of records) {

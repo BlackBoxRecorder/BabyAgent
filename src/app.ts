@@ -14,6 +14,7 @@ import { createAllFsTools } from "./tools/fs/index.js";
 import { McpManager, type ServerStatus } from "./mcp/index.js";
 import { DefaultToolRegistry, type Tool } from "./tools/interface/index.js";
 import { SkillManager } from "./skills.js";
+import { createSkillTool } from "./tools/skill/index.js";
 import { loadSystemPrompt, getSystemPromptPath } from "./llm/prompt.js";
 import { getLogger } from "./logger.js";
 import { DefaultCommandHandler } from "./tui/command.js";
@@ -53,6 +54,12 @@ export async function createApp(): Promise<AppComponents> {
   const cwd = process.cwd();
 
   // ------------------------------------------------------------------
+  // Skills
+  // ------------------------------------------------------------------
+  const skillManager = new SkillManager();
+  await skillManager.loadSkills();
+
+  // ------------------------------------------------------------------
   // Tools
   // ------------------------------------------------------------------
   const bashTool = createBashToolAsTool(cwd);
@@ -82,20 +89,20 @@ export async function createApp(): Promise<AppComponents> {
     }
   }
 
-  // Build the full tool list
-  const allTools: Tool[] = [bashTool, ...fsTools, ...mcpTools];
+  // ------------------------------------------------------------------
+  // Skill meta-tool (Claude Code pattern)
+  // ------------------------------------------------------------------
+  const skillTool = createSkillTool(skillManager);
+
+  // Build the full tool list (Skill tool is listed last so model sees
+  // domain tools first).
+  const allTools: Tool[] = [bashTool, ...fsTools, ...mcpTools, skillTool];
 
   // Create tool registry and register all tools
   const toolRegistry = new DefaultToolRegistry();
   for (const tool of allTools) {
     toolRegistry.register(tool);
   }
-
-  // ------------------------------------------------------------------
-  // Skills
-  // ------------------------------------------------------------------
-  const skillManager = new SkillManager();
-  await skillManager.loadSkills();
 
   // ------------------------------------------------------------------
   // System prompt
@@ -110,10 +117,8 @@ export async function createApp(): Promise<AppComponents> {
     );
     throw err; // Fail fast like models.json
   }
-  const skillsPrompt = skillManager.formatSkillsForSystemPrompt();
-  if (skillsPrompt) {
-    systemPrompt += "\n\n" + skillsPrompt;
-  }
+  // Skills are now registered as a dedicated Skill meta-tool,
+  // not appended to the system prompt. See tools/skill/tool.ts.
 
   // ------------------------------------------------------------------
   // Logger

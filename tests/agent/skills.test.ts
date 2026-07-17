@@ -62,7 +62,6 @@ describe("SkillManager", () => {
         expect(skills[0].description).toBe("A greeting skill");
         expect(skills[0].source).toBe("user");
         expect(skills[0].disableModelInvocation).toBe(false);
-        expect(skills[0].location).toContain("SKILL.md");
       });
     });
 
@@ -106,22 +105,6 @@ describe("SkillManager", () => {
         expect(skills).toHaveLength(1);
         expect(skills[0].description).toBe("Project version");
         expect(skills[0].source).toBe("project");
-      });
-    });
-
-    it("uses name from frontmatter when provided", async () => {
-      await withTempDir(async (tmp) => {
-        await createSkillDir(
-          tmp,
-          "dir-name",
-          "---\nname: custom-name\ndescription: Test\n---\n\n# Content",
-        );
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        const skills = await mgr.loadSkills();
-
-        expect(skills).toHaveLength(1);
-        expect(skills[0].name).toBe("custom-name");
       });
     });
 
@@ -248,78 +231,8 @@ describe("SkillManager", () => {
     });
   });
 
-  describe("formatSkillsForSystemPrompt", () => {
-    it("returns empty string when no skills", async () => {
-      await withTempDir(async (tmp) => {
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        expect(mgr.formatSkillsForSystemPrompt()).toBe("");
-      });
-    });
-
-    it("formats visible skills as XML", async () => {
-      await withTempDir(async (tmp) => {
-        await createSkillDir(
-          tmp,
-          "test",
-          "---\ndescription: A test skill\n---\n\n# Test",
-        );
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        const result = mgr.formatSkillsForSystemPrompt();
-
-        expect(result).toContain("<available_skills>");
-        expect(result).toContain("<name>test</name>");
-        expect(result).toContain("<description>A test skill</description>");
-        expect(result).toContain("<location>");
-        expect(result).toContain("</available_skills>");
-      });
-    });
-
-    it("excludes disabled skills from system prompt", async () => {
-      await withTempDir(async (tmp) => {
-        await createSkillDir(
-          tmp,
-          "visible",
-          "---\ndescription: Visible\n---\n\n# Visible",
-        );
-        await createSkillDir(
-          tmp,
-          "hidden",
-          "---\ndescription: Hidden\ndisable-model-invocation: true\n---\n\n# Hidden",
-        );
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        const result = mgr.formatSkillsForSystemPrompt();
-
-        expect(result).toContain("<name>visible</name>");
-        expect(result).not.toContain("<name>hidden</name>");
-      });
-    });
-
-    it("returns empty string when all skills are disabled", async () => {
-      await withTempDir(async (tmp) => {
-        await createSkillDir(
-          tmp,
-          "hidden",
-          "---\ndescription: Hidden\ndisable-model-invocation: true\n---\n\n# Hidden",
-        );
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        expect(mgr.formatSkillsForSystemPrompt()).toBe("");
-      });
-    });
-  });
-
   describe("readSkillContent", () => {
-    it("reads full SKILL.md content", async () => {
+    it("reads full SKILL.md content and rewrites paths", async () => {
       await withTempDir(async (tmp) => {
         const content =
           "---\ndescription: Test\n---\n\n# Hello World\n\nThis is content.";
@@ -329,7 +242,45 @@ describe("SkillManager", () => {
         await mgr.loadSkills();
 
         const result = await mgr.readSkillContent("test");
-        expect(result).toBe(content);
+        // Rewritten content should contain the original body
+        expect(result).toContain("# Hello World");
+        expect(result).toContain("This is content.");
+        // Should include the skill root dir header
+        expect(result).toContain("> **Skill 根目录**");
+      });
+    });
+
+    it("rewrites relative Markdown links to absolute paths", async () => {
+      await withTempDir(async (tmp) => {
+        const content =
+          "---\ndescription: Test\n---\n\n# Test\n\nSee [template](templates/plan.md) and ![img](assets/logo.png).";
+        await createSkillDir(tmp, "test", content);
+
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        const result = await mgr.readSkillContent("test");
+
+        const skillDir = path.join(tmp, "test");
+        expect(result).toContain(`[template](${skillDir}/templates/plan.md)`);
+        expect(result).toContain(`![img](${skillDir}/assets/logo.png)`);
+      });
+    });
+
+    it("does not rewrite absolute paths or external URLs", async () => {
+      await withTempDir(async (tmp) => {
+        const content =
+          "---\ndescription: Test\n---\n\n# Test\n\n[abs](/etc/hosts) [ext](https://example.com) [anchor](#section).";
+        await createSkillDir(tmp, "test", content);
+
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        const result = await mgr.readSkillContent("test");
+
+        expect(result).toContain("(/etc/hosts)");
+        expect(result).toContain("(https://example.com)");
+        expect(result).toContain("(#section)");
       });
     });
 
@@ -341,6 +292,96 @@ describe("SkillManager", () => {
         await expect(mgr.readSkillContent("unknown")).rejects.toThrow(
           'Skill "unknown" not found.',
         );
+      });
+    });
+  });
+
+  describe("formatSkillsForToolDescription", () => {
+    it("returns empty string when no skills", async () => {
+      await withTempDir(async (tmp) => {
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        expect(mgr.formatSkillsForToolDescription()).toBe("");
+      });
+    });
+
+    it("formats visible skills for tool description", async () => {
+      await withTempDir(async (tmp) => {
+        await createSkillDir(
+          tmp,
+          "fixbug",
+          "---\ndescription: 修复 Bug 的技能\n---\n\n# Fix Bug\nStep by step.",
+        );
+
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        const result = mgr.formatSkillsForToolDescription();
+
+        // Should contain skill instructions header
+        expect(result).toContain("<skills_instructions>");
+        expect(result).toContain("<available_skills>");
+        expect(result).toContain('"fixbug"');
+        expect(result).toContain("修复 Bug 的技能");
+        expect(result).toContain("</available_skills>");
+        // Should NOT contain file locations (unlike system prompt)
+        expect(result).not.toContain("<location>");
+      });
+    });
+
+    it("excludes disabled skills", async () => {
+      await withTempDir(async (tmp) => {
+        await createSkillDir(
+          tmp,
+          "visible",
+          "---\ndescription: Visible skill\n---\n\n# Visible",
+        );
+        await createSkillDir(
+          tmp,
+          "hidden",
+          "---\ndescription: Hidden skill\ndisable-model-invocation: true\n---\n\n# Hidden",
+        );
+
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        const result = mgr.formatSkillsForToolDescription();
+
+        expect(result).toContain("visible");
+        expect(result).not.toContain("hidden");
+      });
+    });
+  });
+
+  describe("readSkillContent cache & hash", () => {
+    it("caches rewritten content and returns hash from raw content", async () => {
+      await withTempDir(async (tmp) => {
+        const content = "---\ndescription: Test\n---\n\n# Hello\n\nCache me.";
+        await createSkillDir(tmp, "test", content);
+
+        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
+        await mgr.loadSkills();
+
+        // Hash is null before content is loaded
+        expect(mgr.getSkillContentHash("test")).toBeNull();
+
+        // First read loads from disk, rewrites paths
+        const result1 = await mgr.readSkillContent("test");
+        // Rewritten content is not equal to raw
+        expect(result1).not.toBe(content);
+        // But contains the original body
+        expect(result1).toContain("# Hello");
+        expect(result1).toContain("Cache me.");
+        const hash1 = mgr.getSkillContentHash("test");
+        expect(hash1).toBeTruthy();
+        expect(hash1).toHaveLength(16);
+
+        // Second read returns cached (rewritten) content — same hash
+        const result2 = await mgr.readSkillContent("test");
+        expect(result2).toBe(result1); // Cached — same rewritten content
+        const hash2 = mgr.getSkillContentHash("test");
+        expect(hash2).toBe(hash1); // Same raw content = same hash
       });
     });
   });

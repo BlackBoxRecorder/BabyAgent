@@ -29,8 +29,16 @@ A user-typed line starting with `/` (e.g. `/help`, `/sessions`, `/skill:name`). 
 _Avoid_: Meta-command, control command
 
 **Skill**:
-A markdown file (`SKILL.md` in a named directory) containing specialized instructions. Can be auto-invoked by the Agent or manually via `/skill:<name>`.
+A markdown file (`SKILL.md` in a named directory) containing specialized instructions. Can be auto-invoked by the Agent or manually via `/skill:<name>`. May include auxiliary resources (scripts, templates, data files) in the same directory.
 _Avoid_: Plugin, extension, prompt template
+
+**Skill Directory**:
+The filesystem directory that holds a single skill — one `SKILL.md` plus optional auxiliary resources. Located under `~/.babyAgent/skills/<name>/` (user-level) or `cwd/.babyAgent/skills/<name>/` (project-level).
+_Avoid_: Skill folder, skill location
+
+**Auxiliary Resource**:
+Any file or subdirectory within a Skill Directory besides `SKILL.md`. Referenced via relative Markdown links in the skill content. When skill content is loaded, relative paths are rewritten to absolute paths automatically so the Agent can access them with tools.
+_Avoid_: Skill asset, supporting file, attachment
 
 **Overlay**:
 A TUI component rendered above the main chat area — modals, selection dialogs, confirmation prompts. Uses Pi TUI's `showOverlay()`.

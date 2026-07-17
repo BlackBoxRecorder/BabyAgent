@@ -13,6 +13,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 
 // ============================================================================
 // Types
@@ -22,7 +23,6 @@ import * as os from "node:os";
 export interface SkillMeta {
   name: string;
   description: string;
-  location: string; // SKILL.md absolute path
   source: "user" | "project";
   disableModelInvocation: boolean;
 }
@@ -35,6 +35,10 @@ export class SkillManager {
   private skills: SkillMeta[] = [];
   private userSkillsDir: string;
   private projectSkillsDir: string;
+  /** In-memory cache of rewritten skill content (with absolute paths), keyed by skill name. */
+  private contentCache: Map<string, string> = new Map();
+  /** Pre-computed SHA-256 content hashes (from raw SKILL.md, before path rewrite). */
+  private contentHashCache: Map<string, string> = new Map();
 
   /**
    * @param userSkillsDir    User-level skills dir (default ~/.babyAgent/skills)
@@ -88,40 +92,117 @@ export class SkillManager {
   }
 
   /**
-   * Format skills for system prompt.
-   * Only includes skills where disableModelInvocation !== true.
+   * Resolve the absolute path to a skill's SKILL.md file.
+   * @param skill  SkillMeta object (must have source and name).
    */
-  formatSkillsForSystemPrompt(): string {
-    const visible = this.skills.filter((s) => !s.disableModelInvocation);
-    if (visible.length === 0) return "";
-
-    const lines: string[] = [
-      "The following skills provide specialized instructions for specific tasks.",
-      "Read the full skill file when the task matches its description.",
-      "When a skill file references a relative path, resolve it against the skill directory.",
-      "",
-      "<available_skills>",
-    ];
-
-    for (const skill of visible) {
-      lines.push("  <skill>");
-      lines.push(`    <name>${skill.name}</name>`);
-      lines.push(`    <description>${skill.description}</description>`);
-      lines.push(`    <location>${skill.location}</location>`);
-      lines.push("  </skill>");
-    }
-
-    lines.push("</available_skills>");
-    return lines.join("\n");
+  private getSkillPath(skill: SkillMeta): string {
+    const baseDir =
+      skill.source === "user" ? this.userSkillsDir : this.projectSkillsDir;
+    return path.join(baseDir, skill.name, "SKILL.md");
   }
 
-  /** Read a skill's full SKILL.md content on demand. */
+  /** Read a skill's full SKILL.md content on demand, with relative paths rewritten
+   *  to absolute paths so the Agent can access auxiliary resources in the skill
+   *  directory. Results are cached in-memory (rewritten form). */
   async readSkillContent(name: string): Promise<string> {
+    // Return cached (rewritten) content if available
+    const cached = this.contentCache.get(name);
+    if (cached !== undefined) return cached;
+
     const skill = this.getSkill(name);
     if (!skill) {
       throw new Error(`Skill "${name}" not found.`);
     }
-    return fs.readFile(skill.location, "utf-8");
+
+    const skillPath = this.getSkillPath(skill);
+    const skillDir = path.dirname(skillPath);
+    const raw = await fs.readFile(skillPath, "utf-8");
+
+    // Pre-compute content hash from raw SKILL.md (before path rewrite)
+    // so that the hash is stable across different machines (paths vary).
+    const hash = crypto
+      .createHash("sha256")
+      .update(raw)
+      .digest("hex")
+      .slice(0, 16);
+    this.contentHashCache.set(name, hash);
+
+    // Rewrite relative paths to absolute so the Agent can access auxiliary
+    // resources (scripts, templates, data files, etc.) via tools.
+    const rewritten = this._rewriteRelativePaths(raw, skillDir);
+    this.contentCache.set(name, rewritten);
+    return rewritten;
+  }
+
+  /**
+   * Get a pre-computed content hash for a skill (SHA-256 hex, first 16 chars).
+   * Hash is computed from the raw SKILL.md content (before path rewriting),
+   * making it stable across different machines.
+   * Returns null if the skill content has not been loaded yet.
+   */
+  getSkillContentHash(name: string): string | null {
+    return this.contentHashCache.get(name) ?? null;
+  }
+
+  /**
+   * Format skills for the Skill meta-tool description.
+   * Only includes skills where disableModelInvocation !== true.
+   * Returns empty string if no visible skills.
+   *
+   * @param tokenBudget  Max characters for description budget (default: 15000).
+   *                     Descriptions are truncated from least-used skills first.
+   */
+  formatSkillsForToolDescription(tokenBudget?: number): string {
+    const visible = this.skills.filter((s) => !s.disableModelInvocation);
+    if (visible.length === 0) return "";
+
+    const budget = tokenBudget ?? 15000;
+
+    const header = [
+      "Execute a skill within the main conversation",
+      "",
+      "<skills_instructions>",
+      "当用户要求你执行任务时，检查下面的可用技能是否可以更有效地帮助完成任务。",
+      "技能提供专业知识和领域能力。",
+      "",
+      "如何使用技能：",
+      "- 使用此工具调用技能，只需传入技能名称（不带参数）",
+      "- 调用技能后，其提示词将展开并提供完成任务的详细说明",
+      '- 示例：`command: "fixbug"` 调用 fixbug 技能',
+      "",
+      "重要：",
+      "- 只使用下面 <available_skills> 中列出的技能",
+      "- 不要调用已经在运行的技能",
+      "</skills_instructions>",
+      "",
+      "<available_skills>",
+    ].join("\n");
+
+    // Build skill entries: "name": description
+    const entries = visible.map((s) => `"${s.name}": ${s.description}`);
+
+    // Fit within budget: header first, then as many entries as fit
+    let result = header;
+    const footer = "</available_skills>";
+    let remaining = budget - result.length - footer.length;
+
+    for (const entry of entries) {
+      if (remaining - entry.length >= 0) {
+        result += "\n" + entry;
+        remaining -= entry.length;
+      } else {
+        // Add truncated count
+        const omitted = entries.indexOf(entry);
+        const left = visible.length - omitted;
+        if (left > 0) {
+          result += `\n(+ ${left} more skills omitted due to budget)`;
+        }
+        break;
+      }
+    }
+
+    result += "\n" + footer;
+    return result;
   }
 
   // ==========================================================================
@@ -176,15 +257,47 @@ export class SkillManager {
       }
 
       skills.push({
-        name: parsed.name ?? entryName,
+        name: entryName,
         description: parsed.description,
-        location: skillMdPath,
         source,
         disableModelInvocation: parsed.disableModelInvocation ?? false,
       });
     }
 
     return skills;
+  }
+
+  // ==========================================================================
+  // Private: Path Rewriting
+  // ==========================================================================
+
+  /**
+   * Rewrite relative Markdown links and images to absolute paths so the
+   * Agent can access auxiliary resources (scripts, templates, data, etc.)
+   * in the skill directory via its tools (bash, fs, MCP).
+   *
+   * Also prepends a context header with the skill's root directory.
+   *
+   * @param raw       Raw SKILL.md content as read from disk.
+   * @param skillDir  Absolute path to the skill directory.
+   */
+  private _rewriteRelativePaths(raw: string, skillDir: string): string {
+    const header = `> **Skill 根目录**: ${skillDir}\n\n`;
+
+    // Match optional leading '!' (image syntax), then [text](relative/path).
+    // Skip paths that are already absolute (start with /), external URLs
+    // (http/https), or anchor links (#).
+    const linkRegex = /(!?)\[([^\]]*)\]\(((?!https?:\/\/|\/|#)[^)]+)\)/g;
+
+    const rewritten = raw.replace(
+      linkRegex,
+      (_match, bang: string, text: string, relPath: string) => {
+        const abs = path.resolve(skillDir, relPath);
+        return `${bang}[${text}](${abs})`;
+      },
+    );
+
+    return header + rewritten;
   }
 
   // ==========================================================================
