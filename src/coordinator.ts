@@ -13,7 +13,6 @@ import {
 } from "./session.js";
 import type { Logger } from "./logger.js";
 import { getLogger } from "./logger.js";
-import { MemoryManager } from "./memory.js";
 
 // ============================================================================
 // Types
@@ -55,13 +54,11 @@ export class ConversationCoordinator {
   /** Session-level accumulated billing (sum of all completed Turns). */
   private _sessionBilling: BillingInfo = _zeroBilling();
   private logger: Logger;
-  private memoryManager: MemoryManager;
 
   constructor(config: CoordinatorConfig) {
     this.agent = config.agent;
     this.sessionManager = config.sessionManager;
     this.logger = config.logger ?? getLogger();
-    this.memoryManager = new MemoryManager();
   }
 
   // ==========================================================================
@@ -173,14 +170,9 @@ export class ConversationCoordinator {
       const meta = await this.sessionManager.createSession(userInput);
       this._sessionId = meta.id;
 
-      const profileText = await this.memoryManager.getMemoryText();
-      const systemPrompt = profileText
-        ? `${this.agent.getSystemPrompt()}\n\n${profileText}`
-        : this.agent.getSystemPrompt();
+      const systemPrompt = this.agent.getSystemPrompt();
 
-      this.agent.setMessages([
-        { role: "system", content: systemPrompt },
-      ]);
+      this.agent.setMessages([{ role: "system", content: systemPrompt }]);
 
       this.logger.info("coordinator", "session_created", {
         sessionId: meta.id,
