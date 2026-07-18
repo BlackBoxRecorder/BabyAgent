@@ -367,10 +367,6 @@ export class TuiLoop {
       case "action":
         await result.action();
         break;
-      case "turn":
-        this.addMessage(new Text("[Activated skill]", 0, 0));
-        await this.executeTurn(result.input);
-        break;
       case "noop":
         // Do nothing
         break;

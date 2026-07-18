@@ -21,8 +21,6 @@ export type CommandResult =
   | { type: "display"; text: string }
   /** Execute an async action (e.g., shutdown). */
   | { type: "action"; action: () => Promise<void> }
-  /** Send input to the LLM as a turn. */
-  | { type: "turn"; input: string }
   /** Activate a skill by injecting its content into the conversation. */
   | { type: "skill_activate"; name: string; content: string; prompt?: string }
   /** Command not recognized. */
