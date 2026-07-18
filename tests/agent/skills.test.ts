@@ -62,6 +62,7 @@ describe("SkillManager", () => {
         expect(skills[0].description).toBe("A greeting skill");
         expect(skills[0].source).toBe("user");
         expect(skills[0].disableModelInvocation).toBe(false);
+        expect(skills[0].location).toContain("SKILL.md");
       });
     });
 
@@ -232,7 +233,7 @@ describe("SkillManager", () => {
   });
 
   describe("readSkillContent", () => {
-    it("reads full SKILL.md content and rewrites paths", async () => {
+    it("reads full SKILL.md content with frontmatter stripped", async () => {
       await withTempDir(async (tmp) => {
         const content =
           "---\ndescription: Test\n---\n\n# Hello World\n\nThis is content.";
@@ -252,40 +253,6 @@ describe("SkillManager", () => {
       });
     });
 
-    it("rewrites relative Markdown links to absolute paths", async () => {
-      await withTempDir(async (tmp) => {
-        const content =
-          "---\ndescription: Test\n---\n\n# Test\n\nSee [template](templates/plan.md) and ![img](assets/logo.png).";
-        await createSkillDir(tmp, "test", content);
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        const result = await mgr.readSkillContent("test");
-
-        const skillDir = path.join(tmp, "test");
-        expect(result).toContain(`[template](${skillDir}/templates/plan.md)`);
-        expect(result).toContain(`![img](${skillDir}/assets/logo.png)`);
-      });
-    });
-
-    it("does not rewrite absolute paths or external URLs", async () => {
-      await withTempDir(async (tmp) => {
-        const content =
-          "---\ndescription: Test\n---\n\n# Test\n\n[abs](/etc/hosts) [ext](https://example.com) [anchor](#section).";
-        await createSkillDir(tmp, "test", content);
-
-        const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
-        await mgr.loadSkills();
-
-        const result = await mgr.readSkillContent("test");
-
-        expect(result).toContain("(/etc/hosts)");
-        expect(result).toContain("(https://example.com)");
-        expect(result).toContain("(#section)");
-      });
-    });
-
     it("throws for unknown skill", async () => {
       await withTempDir(async (tmp) => {
         const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
@@ -298,17 +265,17 @@ describe("SkillManager", () => {
     });
   });
 
-  describe("formatSkillsForToolDescription", () => {
+  describe("formatSkillsForSystemPrompt", () => {
     it("returns empty string when no skills", async () => {
       await withTempDir(async (tmp) => {
         const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
         await mgr.loadSkills();
 
-        expect(mgr.formatSkillsForToolDescription()).toBe("");
+        expect(mgr.formatSkillsForSystemPrompt()).toBe("");
       });
     });
 
-    it("formats visible skills for tool description", async () => {
+    it("formats visible skills for system prompt", async () => {
       await withTempDir(async (tmp) => {
         await createSkillDir(
           tmp,
@@ -319,16 +286,15 @@ describe("SkillManager", () => {
         const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
         await mgr.loadSkills();
 
-        const result = mgr.formatSkillsForToolDescription();
+        const result = mgr.formatSkillsForSystemPrompt();
 
-        // Should contain skill instructions header
-        expect(result).toContain("<skills_instructions>");
+        // Should contain skill catalog with name, description, location
         expect(result).toContain("<available_skills>");
-        expect(result).toContain('"fixbug"');
+        expect(result).toContain("<name>fixbug</name>");
         expect(result).toContain("修复 Bug 的技能");
+        expect(result).toContain("<location>");
+        expect(result).toContain("SKILL.md");
         expect(result).toContain("</available_skills>");
-        // Should NOT contain file locations (unlike system prompt)
-        expect(result).not.toContain("<location>");
       });
     });
 
@@ -348,7 +314,7 @@ describe("SkillManager", () => {
         const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
         await mgr.loadSkills();
 
-        const result = mgr.formatSkillsForToolDescription();
+        const result = mgr.formatSkillsForSystemPrompt();
 
         expect(result).toContain("visible");
         expect(result).not.toContain("hidden");
@@ -356,8 +322,8 @@ describe("SkillManager", () => {
     });
   });
 
-  describe("readSkillContent cache & hash", () => {
-    it("caches rewritten content and returns hash from raw content", async () => {
+  describe("readSkillContent", () => {
+    it("reads SKILL.md content with frontmatter stripped", async () => {
       await withTempDir(async (tmp) => {
         const content = "---\ndescription: Test\n---\n\n# Hello\n\nCache me.";
         await createSkillDir(tmp, "test", content);
@@ -365,25 +331,14 @@ describe("SkillManager", () => {
         const mgr = new SkillManager(tmp, path.join(tmp, "nonexistent"));
         await mgr.loadSkills();
 
-        // Hash is null before content is loaded
-        expect(mgr.getSkillContentHash("test")).toBeNull();
-
-        // First read loads from disk, rewrites paths
-        const result1 = await mgr.readSkillContent("test");
-        // Rewritten content is not equal to raw
-        expect(result1).not.toBe(content);
-        // But contains the original body
-        expect(result1).toContain("# Hello");
-        expect(result1).toContain("Cache me.");
-        const hash1 = mgr.getSkillContentHash("test");
-        expect(hash1).toBeTruthy();
-        expect(hash1).toHaveLength(16);
-
-        // Second read returns cached (rewritten) content — same hash
-        const result2 = await mgr.readSkillContent("test");
-        expect(result2).toBe(result1); // Cached — same rewritten content
-        const hash2 = mgr.getSkillContentHash("test");
-        expect(hash2).toBe(hash1); // Same raw content = same hash
+        const result = await mgr.readSkillContent("test");
+        // Body content preserved after frontmatter stripping
+        expect(result).toContain("# Hello");
+        expect(result).toContain("Cache me.");
+        // Frontmatter should be stripped from the injected content
+        expect(result).not.toContain("description: Test");
+        // Should include the skill directory note at the end
+        expect(result).toContain("(Skill directory:");
       });
     });
   });
