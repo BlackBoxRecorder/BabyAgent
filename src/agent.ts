@@ -311,7 +311,7 @@ export class Agent implements AgentSession {
                   // Content changed — replace the existing system message.
                   messages[existingIdx] = {
                     role: "system",
-                    content: `[Skill: ${skillName}]\n\n${skillContent}`,
+                    content: `<active_skill name="${skillName}">\n${skillContent}\n</active_skill>`,
                     _skillName: skillName,
                     _skillHash: skillHash,
                   } as any;
@@ -324,7 +324,7 @@ export class Agent implements AgentSession {
                 const insertIdx = sysIdx >= 0 ? sysIdx + 1 : 1;
                 (messages as any[]).splice(insertIdx, 0, {
                   role: "system",
-                  content: `[Skill: ${skillName}]\n\n${skillContent}`,
+                  content: `<active_skill name="${skillName}">\n${skillContent}\n</active_skill>`,
                   _skillName: skillName,
                   _skillHash: skillHash,
                 });

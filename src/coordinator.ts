@@ -133,9 +133,12 @@ export class ConversationCoordinator {
     this._activeSkillHashes.set(name, contentHash);
 
     const messages = [...this.agent.getMessages()] as any[];
+    // Use XML-style tags: LLMs trained on tool-calling / structured
+    // prompting interpret <active_skill> as a strong signal that these
+    // instructions are mandatory, not optional context.
     const skillMsg = {
       role: "system",
-      content: `[Skill: ${name}]\n\n${content}`,
+      content: `<active_skill name="${name}">\n${content}\n</active_skill>`,
       _skillName: name,
     };
 
@@ -230,7 +233,18 @@ export class ConversationCoordinator {
 
       const systemPrompt = this.agent.getSystemPrompt();
 
-      this.agent.setMessages([{ role: "system", content: systemPrompt }]);
+      // Preserve skill system messages that were activated before session
+      // creation (e.g. via /skill:<name>).  Without this, activateSkill()
+      // injections are silently lost when the first turn creates the session.
+      const existingMessages = this.agent.getMessages() as any[];
+      const skillMessages = existingMessages.filter(
+        (m: any) => m.role === "system" && m._skillName,
+      );
+
+      this.agent.setMessages([
+        { role: "system", content: systemPrompt },
+        ...skillMessages,
+      ]);
 
       this.logger.info("coordinator", "session_created", {
         sessionId: meta.id,

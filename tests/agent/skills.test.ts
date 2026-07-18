@@ -242,11 +242,13 @@ describe("SkillManager", () => {
         await mgr.loadSkills();
 
         const result = await mgr.readSkillContent("test");
-        // Rewritten content should contain the original body
+        // Body content preserved after frontmatter stripping
         expect(result).toContain("# Hello World");
         expect(result).toContain("This is content.");
-        // Should include the skill root dir header
-        expect(result).toContain("> **Skill 根目录**");
+        // Frontmatter should be stripped from the injected content
+        expect(result).not.toContain("description: Test");
+        // Should include the skill directory note at the end
+        expect(result).toContain("(Skill directory:");
       });
     });
 

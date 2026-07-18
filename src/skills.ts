@@ -105,7 +105,7 @@ export class SkillManager {
    *  to absolute paths so the Agent can access auxiliary resources in the skill
    *  directory. Results are cached in-memory (rewritten form). */
   async readSkillContent(name: string): Promise<string> {
-    // Return cached (rewritten) content if available
+    // Return cached content if available (already stripped + rewritten).
     const cached = this.contentCache.get(name);
     if (cached !== undefined) return cached;
 
@@ -118,7 +118,7 @@ export class SkillManager {
     const skillDir = path.dirname(skillPath);
     const raw = await fs.readFile(skillPath, "utf-8");
 
-    // Pre-compute content hash from raw SKILL.md (before path rewrite)
+    // Pre-compute content hash from raw SKILL.md (before any transformation)
     // so that the hash is stable across different machines (paths vary).
     const hash = crypto
       .createHash("sha256")
@@ -127,9 +127,13 @@ export class SkillManager {
       .slice(0, 16);
     this.contentHashCache.set(name, hash);
 
+    // Strip YAML frontmatter so the LLM sees only actionable instructions,
+    // not metadata delimiters (---).  Hash is still computed from raw content.
+    const bodyOnly = this._stripFrontmatter(raw);
+
     // Rewrite relative paths to absolute so the Agent can access auxiliary
     // resources (scripts, templates, data files, etc.) via tools.
-    const rewritten = this._rewriteRelativePaths(raw, skillDir);
+    const rewritten = this._rewriteRelativePaths(bodyOnly, skillDir);
     this.contentCache.set(name, rewritten);
     return rewritten;
   }
@@ -268,6 +272,32 @@ export class SkillManager {
   }
 
   // ==========================================================================
+  // Private: Frontmatter Stripping
+  // ==========================================================================
+
+  /**
+   * Strip YAML frontmatter (--- delimited block at the start) from
+   * raw SKILL.md content.  Returns only the body (instructions).
+   * If no frontmatter is found, returns the original content.
+   *
+   * Frontmatter is metadata for the skill loader; it should not be
+   * injected into the LLM context as it confuses the model.
+   */
+  private _stripFrontmatter(raw: string): string {
+    const lines = raw.split("\n");
+    const firstLine = lines[0]?.trim();
+    if (firstLine !== "---") return raw;
+
+    const endIdx = lines.slice(1).findIndex((l) => l.trim() === "---");
+    if (endIdx === -1) return raw;
+
+    // Return everything after the closing --- (skip the --- line itself)
+    const bodyStart = endIdx + 2; // +1 for slice(1) offset, +1 to skip ---
+    const body = lines.slice(bodyStart).join("\n");
+    return body.trimStart();
+  }
+
+  // ==========================================================================
   // Private: Path Rewriting
   // ==========================================================================
 
@@ -276,14 +306,13 @@ export class SkillManager {
    * Agent can access auxiliary resources (scripts, templates, data, etc.)
    * in the skill directory via its tools (bash, fs, MCP).
    *
-   * Also prepends a context header with the skill's root directory.
+   * Appends a brief note about the skill's root directory so the Agent
+   * knows where auxiliary resources live.
    *
-   * @param raw       Raw SKILL.md content as read from disk.
+   * @param raw       SKILL.md body content (frontmatter already stripped).
    * @param skillDir  Absolute path to the skill directory.
    */
   private _rewriteRelativePaths(raw: string, skillDir: string): string {
-    const header = `> **Skill 根目录**: ${skillDir}\n\n`;
-
     // Match optional leading '!' (image syntax), then [text](relative/path).
     // Skip paths that are already absolute (start with /), external URLs
     // (http/https), or anchor links (#).
@@ -297,7 +326,9 @@ export class SkillManager {
       },
     );
 
-    return header + rewritten;
+    // Append directory note AFTER the skill body so the LLM reads
+    // instructions first, then sees the resource path as a reference.
+    return rewritten + `\n(Skill directory: ${skillDir})`;
   }
 
   // ==========================================================================

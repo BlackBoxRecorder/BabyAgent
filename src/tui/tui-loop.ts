@@ -205,11 +205,13 @@ export class TuiLoop {
         onSessionSelect: (sessionId) => this.handleSessionSelect(sessionId),
       },
     );
+    /*
     const skillProvider = new SkillAutocompleteProvider(
       this.skillManager,
       sessionProvider,
     );
-    this.editor.setAutocompleteProvider(skillProvider);
+    */
+    this.editor.setAutocompleteProvider(sessionProvider);
 
     this.tui.addChild(this.editor);
 
