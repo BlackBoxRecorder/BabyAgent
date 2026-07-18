@@ -29,17 +29,25 @@ const PER_MILLION = 1_000_000;
  */
 export class DefaultBillingCalculator implements BillingCalculator {
   compute(usage: TokenUsage, modelCost: ModelCost): BillingInfo {
-    const inputCost = (usage.prompt_tokens * modelCost.input) / PER_MILLION;
     const outputCost =
       (usage.completion_tokens * modelCost.output) / PER_MILLION;
+
     const cacheReadCost =
       ((usage.prompt_cache_hit_tokens ?? 0) * modelCost.cacheRead) /
       PER_MILLION;
     const cacheWriteCost =
-      ((usage.prompt_cache_miss_tokens ?? 0) * modelCost.cacheWrite) /
-      PER_MILLION;
-    const totalCost = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+      ((usage.prompt_cache_miss_tokens ?? 0) * modelCost.input) / PER_MILLION;
 
-    return { inputCost, outputCost, cacheReadCost, cacheWriteCost, totalCost };
+    const inputCost = cacheReadCost + cacheWriteCost;
+
+    const totalCost = inputCost + outputCost;
+
+    return {
+      inputCost,
+      outputCost,
+      cacheReadCost,
+      cacheWriteCost,
+      totalCost,
+    };
   }
 }
