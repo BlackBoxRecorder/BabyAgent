@@ -26,7 +26,6 @@ import type { McpManager, ServerStatus } from "../mcp/index.js";
 import type { Tool } from "../tools/interface/index.js";
 import type { SkillManager } from "../skills.js";
 import { SessionAutocompleteProvider } from "./session-autocomplete.js";
-import { SkillAutocompleteProvider } from "./skill-autocomplete.js";
 import type { ExecuteTurnOptions } from "../coordinator.js";
 import type {
   CommandHandler,
@@ -379,10 +378,7 @@ export class TuiLoop {
         this.coordinator.activateSkill(result.name, result.content);
         const skill = this.skillManager.getSkill(result.name);
         const desc = skill ? ` — ${skill.description}` : "";
-        this.addMessage(
-          new Text(`[Skill "${result.name}" 已激活]${desc}`, 1, 0),
-        );
-        this.updateStatusBar();
+
         if (result.prompt) {
           this.addMessage(
             new Text(
@@ -392,6 +388,12 @@ export class TuiLoop {
               ansi.bgGray,
             ),
           );
+
+          this.addMessage(
+            new Text(`[Skill "${result.name}" 已激活]${desc}`, 1, 0),
+          );
+          this.updateStatusBar();
+
           await this.executeTurn(result.prompt);
         }
         break;
